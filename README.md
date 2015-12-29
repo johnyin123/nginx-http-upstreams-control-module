@@ -10,11 +10,11 @@ To install, compile nginx with this ./configure option:
 
 
 2.Config 
-_location ~^/upstreams {
+location ~^/upstreams {
     upstreams_admin       on;
     //auth_basic            "valid-user";
     //auth_basic_user_file  oschina/oschina_pw;
-}_
+}
 
 3.Use
 Enter http://host/upstreams
