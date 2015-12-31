@@ -1,8 +1,6 @@
 #nginx http upstreams control module  
-
-
 The guide of ngx_http_upstream_ctl_module module installation
----
+
 
 ##1.Install
 To install, compile nginx with this ./configure option:
