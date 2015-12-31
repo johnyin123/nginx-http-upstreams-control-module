@@ -2,7 +2,7 @@
 The guide of ngx_http_upstream_ctl_module module installation
 
 
-##1.Install
+#1.Install
 To install, compile nginx with this ./configure option:
 
     --add-module=path/to/this/directory
