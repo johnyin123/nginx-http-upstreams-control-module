@@ -13,7 +13,7 @@ To install, compile nginx with this ./configure option:
 
     location ~^/upstreams {  
 
-        upstreams_admin       on;  
+        upstreams_admin         on;  
 
         //auth_basic            "valid-user";  
 
