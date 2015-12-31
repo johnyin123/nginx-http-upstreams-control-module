@@ -10,6 +10,7 @@ To install, compile nginx with this ./configure option:
 
 
 #2.Config   
+  
 
 location ~^/upstreams {  
 
@@ -19,7 +20,8 @@ location ~^/upstreams {
 
     //auth_basic_user_file  oschina/oschina_pw;  
     
-}  
+}   
+ 
 
 #3.Use
 Enter http://host/upstreams
