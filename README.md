@@ -1,25 +1,32 @@
 #nginx http upstreams control module
-
 The guide of ngx_http_upstream_ctl_module module installation
 ---
 
-1.Install
-To install, compile nginx with this ./configure option:
+#Install
+1. Compile nginx with this ./configure option:
 
-    --add-module=path/to/this/directory
+    --add-module=path/to/src/directory
+    
+2. Copy the "html" directory's "bootstrap" folder and "jquery.min.js" to nginx "html" directory.
 
+#Config 
+   Add following content to nginx.conf:
 
-2.Config 
-location ~^/upstreams {
-    upstreams_admin       on;
-    //auth_basic            "valid-user";
-    //auth_basic_user_file  oschina/oschina_pw;
-}
+    location ~^/upstreams {    
 
-3.Use
-Enter http://host/upstreams
+       upstreams_admin         on;    
 
---- by dss_liuhl 
-    QQ:1610153337 
-    email:15817409379@163.com
+       //auth_basic            "valid-user";    
+
+       //auth_basic_user_file  oschina/oschina_pw;    
+
+    }
+
+#Use
+   Enter http://host/upstreams
+
+--- 
+* by dss_liuhl 
+* QQ:1610153337 
+* email:15817409379@163.com
 

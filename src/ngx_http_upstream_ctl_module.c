@@ -15,7 +15,7 @@
 
 #define UPSTREAM_CTL_ADM_OFF             0
 #define UPSTREAM_CTL_ADM_ON              1
-#define TEMPLATE_BUFFER_SIZE             20
+#define TEMPLATE_BUFFER_SIZE             128
 #define UC_MAX_RESPONSE_SIZE             20000
 
 
@@ -88,7 +88,6 @@ static void uc_channel_handler(ngx_event_t *ev);
 static void *uc_module_create_main_conf(ngx_conf_t *cf);
 static void uc_sig_syn_handler(int signo);
 
-
 static uc_main_conf_t *sucmcf = 0;
 
 static ngx_command_t  ngx_http_upstream_ctl_commands[] =
@@ -157,7 +156,6 @@ static ngx_int_t
 uc_request_handler(ngx_http_request_t *r)
 {
     ngx_chain_t                     out;
-    ngx_int_t                       rc;
     ngx_buf_t                       *b;
     ngx_uint_t                      i, m;
     ngx_uint_t                      uilen;
@@ -168,10 +166,30 @@ uc_request_handler(ngx_http_request_t *r)
     ngx_http_upstream_server_t      *usrv;
 
 
-    char testui[UC_MAX_RESPONSE_SIZE] = "This is a test with data.<br>\r\n";
+    char testui[UC_MAX_RESPONSE_SIZE];
+    memset(testui, 0, sizeof(testui));
+    strcat(testui, (const char *)"<!DOCTYPE html><html lang='zh-CN'>"\
+           "<head>"\
+           "<meta charset='utf-8'>"\
+           "<meta http-equiv='X-UA-Compatible' content='IE=edge'>"\
+           "<meta name='viewport' content='width=device-width, initial-scale=1'>"\
+           "<meta http-equiv='content-type' content='text/html; charset=UTF-8'>"\
+           "<meta name='keywords' content='Nginx, Upstreams, Control, Nginx module' />"\
+           "<meta name='description' content='Nginx Upstreams Control' />"\
+           "<meta name='author' content='dss_liuhl(QQ:1610153337 email:15817409379@163.com)' />"\
+           "<title>Nginx Upstreams</title>"\
+           "<script>"\
+           "window.jQuery || document.write(\'<script src=\"/jquery.min.js\"><\\/script>\');"\
+           "</script>"\
+           "<script src='/bootstrap/js/bootstrap.min.js'></script>"\
+           "<link type='text/css' href='/bootstrap/css/bootstrap.min.css' rel='stylesheet'>"\
+           "</head>"\
+           "<body>"\
+           "<div style='padding:20px;'>");
+
     char tmpbuf[TEMPLATE_BUFFER_SIZE];
-    m = 0;
     memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
+
 
     if (r->method & NGX_HTTP_POST)
     {
@@ -189,31 +207,45 @@ uc_request_handler(ngx_http_request_t *r)
     ucmcf = ngx_http_get_module_main_conf(r, ngx_http_upstream_ctl_module);
     ucscfp = ucmcf->upstreams.elts;
 
+    memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
+    ngx_sprintf((u_char *)tmpbuf, "<h1>Nginx Upstreams(%ui)</h1><label>Uptime: %d days</label>", ucmcf->upstreams.nelts, 730);
+    strncat(testui, (const char *)tmpbuf, strlen(tmpbuf));
+
     for (i = 0; i < ucmcf->upstreams.nelts; i++)
     {
 
         ucscf = ucscfp[i];
         uscf = ucscf->upstream;
-        strcat(testui, (const char *)"<form method='post' name='");
+        strcat(testui, (const char *)"<form class='form-inline' method='post' name='");
         strncat(testui, (const char *)uscf->host.data, uscf->host.len);
         strcat(testui, (const char *)"' action='/upstreams' >");
-        strcat(testui, (const char *)"<fieldset><legend>");
+        strcat(testui, (const char *)"<fieldset><legend><h2>");
         strncat(testui, (const char *)uscf->host.data, uscf->host.len);
-        strcat(testui, (const char *)"</legend>");
-        strcat(testui, (const char *)"<input type='checkbox' name='iphash' value='1' ");
+        strcat(testui, (const char *)"</h2></legend>");
+        strcat(testui, (const char *)"<div class='checkbox-inline'><label><input type='checkbox' id='iphash_");
+        strncat(testui, (const char *)uscf->host.data, uscf->host.len);
+        strcat(testui, (const char *)"' name='iphash_");
+        strncat(testui, (const char *)uscf->host.data, uscf->host.len);
+        strcat(testui, (const char *)"' value='1' ");
         if (ucscf->ip_hash)
         {
             strcat(testui, (const char *)"checked='checked'");
         }
-        strcat(testui, (const char *)" /> ip_hash");
+        strcat(testui, (const char *)" />ip_hash</label></div>");
 
 
-        strcat(testui, (const char *)"keepalive:<select name='keepalive'>");
+        strcat(testui, (const char *)"<div class='form-group' style='margin-left:20px;'><label for='keepalive_");
+        strncat(testui, (const char *)uscf->host.data, uscf->host.len);
+        strcat(testui, (const char *)"'>keepalive:</label><select id='keepalive_");
+        strncat(testui, (const char *)uscf->host.data, uscf->host.len);
+        strcat(testui, (const char *)"' name='keepalive_");
+        strncat(testui, (const char *)uscf->host.data, uscf->host.len);
+        strcat(testui, (const char *)"'>");
         for (m = 0; m < 10; m++)
         {
             strcat(testui, (const char *)"<option value='");
             memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
-            sprintf(tmpbuf, "%d", m);
+            ngx_sprintf((u_char *)tmpbuf, "%ui", m);
             strncat(testui, (const char *)tmpbuf, strlen(tmpbuf));
             if (ucscf->keepalive == m)
             {
@@ -227,21 +259,25 @@ uc_request_handler(ngx_http_request_t *r)
             strcat(testui, (const char *)"</option>");
 
         }
-        strcat(testui, (const char *)"</select>");
-        strcat(testui, (const char *)"<input name='submit_");
+        strcat(testui, (const char *)"</select></div>");
+        strcat(testui, (const char *)"<div class='form-group' style='margin-left:20px;'><label><input name='submit_");
         strncat(testui, (const char *)uscf->host.data, uscf->host.len);
-        strcat(testui, (const char *)"' type='submit' value='update'></input><br><table border='1'><tr><th>Server</th><th>Weight</th><th>Backup</th><th>max_fails</th><th>fail_timeout</th><th>Status</th><th>Requests</th><th>Operations</th></tr>");
+        strcat(testui, (const char *)"' type='submit' value='update'></input></label></div><br>"\
+               "<table  style='margin-top:10px;' class='table table-striped table-bordered'>"\
+               "<tr><th>Server</th><th align='center' style='text-align:center'>Weight</th><th align='center' style='text-align:center'>Backup</th>"\
+               "<th align='center' style='text-align:center'>max_fails</th><th align='center' style='text-align:center'>fail_timeout</th>"\
+               "<th align='center' style='text-align:center'>Status</th><th align='right' style='text-align:right'>Requests</th><th>Operations</th></tr>");
         usrv = uscf->servers->elts;
         for (m = 0; m < uscf->servers->nelts; m++, usrv++)
         {
             strcat(testui, (const char *)"<tr>");
             strcat(testui, (const char *)"<td>");
             strncat(testui, (const char *)usrv->name.data, usrv->name.len);
-            strcat(testui, (const char *)"</td><td>");
+            strcat(testui, (const char *)"</td><td align='center'>");
             memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
-            sprintf(tmpbuf, "%d ", usrv->weight);
+            ngx_sprintf((u_char *)tmpbuf, "%ui", usrv->weight);
             strncat(testui, (const char *)tmpbuf, strlen(tmpbuf));
-            strcat(testui, (const char *)"</td><td>");
+            strcat(testui, (const char *)"</td><td align='center'>");
             //backup
             if (usrv->backup)
             {
@@ -251,15 +287,15 @@ uc_request_handler(ngx_http_request_t *r)
             {
                 strncat(testui, (const char *)"No", 2);
             }
-            strcat(testui, (const char *)"</td><td>");
+            strcat(testui, (const char *)"</td><td align='center'>");
             memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
-            sprintf(tmpbuf, "%d ", usrv->max_fails);
+            ngx_sprintf((u_char *)tmpbuf, "%ui", usrv->max_fails);
             strncat(testui, (const char *)tmpbuf, strlen(tmpbuf));
-            strcat(testui, (const char *)"</td><td>");
+            strcat(testui, (const char *)"</td><td align='center'>");
             memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
-            sprintf(tmpbuf, "%d ", (int)usrv->fail_timeout);
+            ngx_sprintf((u_char *)tmpbuf, "%T", (int)usrv->fail_timeout);
             strncat(testui, (const char *)tmpbuf, strlen(tmpbuf));
-            strcat(testui, (const char *)"</td><td>");
+            strcat(testui, (const char *)"</td><td align='center'>");
             //down
             if (usrv->down)
             {
@@ -269,16 +305,16 @@ uc_request_handler(ngx_http_request_t *r)
             {
                 strncat(testui, (const char *)"Normal", 6);
             }
-            strcat(testui, (const char *)"</td><td>");
+            strcat(testui, (const char *)"</td><td align='right'>23659");
 
             strcat(testui, (const char *)"</td><td>");
-            strcat(testui, (const char *)"<a>edit</a><a>disable</a>");
+            strcat(testui, (const char *)"<a>edit</a> <a>disable</a>");
             strcat(testui, (const char *)"</td>");
             strcat(testui, (const char *)"</tr>");
         }
         strcat(testui, (const char *)"</table></fieldset></form>");
     }
-
+    strcat(testui, (const char *)"</div></body></html>");
 
     uilen = strlen(testui);
     r->headers_out.status = NGX_HTTP_OK;
@@ -286,7 +322,7 @@ uc_request_handler(ngx_http_request_t *r)
     r->headers_out.content_type.len = sizeof("text/html") - 1;
     r->headers_out.content_type.data = (u_char *)"text/html";
 
-    rc = ngx_http_send_header(r);
+    ngx_http_send_header(r);
 
     b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
     if (b == NULL)
@@ -314,7 +350,6 @@ uc_request_handler(ngx_http_request_t *r)
 
     if (r->method & NGX_HTTP_POST)
     {
-
         //TEST
         ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
                       "uc_request_handler() == send sig SIG_UPSTREAM_SYN to master process.");
@@ -626,8 +661,6 @@ uc_module_init(ngx_cycle_t *cycle)
             {
                 ucmcf->original_add_event_handler = m->actions.add;
                 m->actions.add = uc_channel_add_event_hook_handler;
-                ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                              "uc_module_init() == success to set uc_channel_add_event_hook_handler:%d", (int)m->actions.add);
             }
             break;
 
