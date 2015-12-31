@@ -27,7 +27,8 @@ To install, compile nginx with this ./configure option:
 Enter http://host/upstreams
 
 --- 
-     by dss_liuhl 
-     QQ:1610153337 
-     email:15817409379@163.com
+##Author
+* by dss_liuhl 
+* QQ:1610153337 
+* email:15817409379@163.com
 
