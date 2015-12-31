@@ -9,8 +9,9 @@ To install, compile nginx with this ./configure option:
     --add-module=path/to/this/directory
 
 
-#2.Config 
-`location ~^/upstreams {  
+#2.Config   
+
+location ~^/upstreams {  
 
     upstreams_admin       on;  
 
@@ -20,7 +21,6 @@ To install, compile nginx with this ./configure option:
     
 }  
 
-`
 #3.Use
 Enter http://host/upstreams
 
