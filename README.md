@@ -1,6 +1,7 @@
-#nginx http upstreams control module
+#nginx http upstreams control module  
 
-##The guide of ngx_http_upstream_ctl_module module installation
+
+The guide of ngx_http_upstream_ctl_module module installation
 ---
 
 ##1.Install
