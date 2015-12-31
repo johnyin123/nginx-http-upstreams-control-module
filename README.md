@@ -8,7 +8,7 @@ To install, compile nginx with this ./configure option:
     --add-module=path/to/this/directory
 
 
-##2.Config   
+#2.Config   
   
 
     location ~^/upstreams {  
@@ -22,11 +22,11 @@ To install, compile nginx with this ./configure option:
     }   
  
 
-##3.Use
+#3.Use
 Enter http://host/upstreams
 
 --- 
-##Author
+#Author
 * by dss_liuhl 
 * QQ:1610153337 
 * email:15817409379@163.com
