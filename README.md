@@ -2,10 +2,9 @@
 The guide of ngx_http_upstream_ctl_module module installation
 
 #Install
-1. Compile nginx with this ./configure option:
+1. Compile nginx with this ./configure option:  
 
-    --add-module=path/to/src/directory    
-  
+       --add-module=path/to/src/directory  
 
 2. Copy the "html" directory's "bootstrap" folder and "jquery.min.js" to nginx "html" directory.
 
