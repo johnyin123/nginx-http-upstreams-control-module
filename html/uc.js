@@ -64,3 +64,43 @@ $(".modal-footer>button").click(function ()
     
 }
 );
+
+$(".switch-status").click(function ()
+{
+    
+    var btn = $(this);
+    var status = btn.parents("tr").first().find(".status");
+    var statusspan = status.find("span");
+    var statusinput = status.find("input");
+    
+    if (btn.text() == "disable")
+    {
+        statusspan.text("Down");
+        statusinput.val("Down");
+        if (statusspan.attr("run") == "Down")
+        {
+            statusspan.attr("style", "color:green");
+        }
+        else
+        {
+            statusspan.attr("style", "color:red");
+        }
+        btn.text("enable");
+    }
+    else if (btn.text() == "enable")
+    {
+        statusspan.text("Normal");
+        statusinput.val("Normal");
+        if (statusspan.attr("run") == "Normal")
+        {
+            statusspan.attr("style", "color:green");
+        }
+        else
+        {
+            statusspan.attr("style", "color:red");
+        }
+        
+        btn.text("disable");
+    }
+}
+);
