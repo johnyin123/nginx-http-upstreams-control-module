@@ -15,9 +15,9 @@ The guide of ngx_http_upstream_ctl_module module installation
 
        upstreams_admin         on;    
 
-       //auth_basic            "valid-user";    
+       auth_basic              "valid user";    
 
-       //auth_basic_user_file  oschina/oschina_pw;    
+       auth_basic_user_file     /usr/local/nginx/conf/oschina_pw;    
 
     }
 

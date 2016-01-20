@@ -94,8 +94,6 @@ typedef struct
 typedef struct
 {
     ngx_flag_t         upstreams_admin;
-    //ngx_str_t        auth_basic;
-    //ngx_str_t        auth_basic_user_file;
 
     ngx_array_t        upstreams;/* array member type is uc_srv_conf_t * */
 
