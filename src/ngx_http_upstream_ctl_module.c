@@ -9,22 +9,32 @@
 #include <ngx_http.h>
 #include <ngx_channel.h>
 
-
+//signal define
 #define SIG_UPSTREAM_SYN                  36
 #define SIG_UPSTREAM_SYN_ACK              39
 #define SIG_UPSTREAM_REQUEST_COUNT_REPORT 40
 
+//channel command define
 #define CHANNEL_CMD_UPSTREAM_SYN          1024
 #define CHANNEL_CMD_UPSTREAM_UNLOCK       1025
+
+//module command value define
 #define UPSTREAM_CTL_ADM_OFF              0
 #define UPSTREAM_CTL_ADM_ON               1
+//temporay buffer size
 #define TEMPLATE_BUFFER_SIZE              8192
+//html response content maxium length
 #define UC_MAX_RESPONSE_SIZE              40000
+//allocated share memory size
 #define UC_SHZONE_PAGE_COUNT              9
+//nginx upstream configuration specifacation
 #define UC_MAX_GROUPSRV_NUMBER            10000
 #define UC_MAX_GROUP_NUMBER               1000
+//request count
 #define UC_RCOUNT_KEY_ARRAY_INIT_SIZE     5
-#define UC_WAIT_OUTTIME                   2000
+//synchronous wait outtime
+#define UC_WAIT_OUTTIME                   3000
+//user interface response flag
 #define UI_STATUS_GET                     0
 #define UI_STATUS_POST_OK                 1
 #define UI_STATUS_POST_TIMEOUT            2
@@ -140,7 +150,7 @@ typedef struct
     ngx_str_t                              host;
     ngx_uint_t                             ip_hash;
     ngx_uint_t                             keepalive;
-    ngx_http_upstream_srv_conf_t           *upstream;
+    ngx_http_upstream_srv_conf_t           *upstream;                 /* point to original upstream server configuration */
 
     ngx_array_t                            *uc_servers;               /* array member type is uc_server_t */
     ngx_http_upstream_init_peer_pt         original_peer_init_handler;
@@ -165,17 +175,16 @@ typedef struct
 
 typedef struct /* used to share memory zone */
 {
-    ngx_atomic_t                   post_lock;
-    ngx_pid_t                      post_process;
-    ngx_uint_t                     syn_conf;      //syn confidx
+    ngx_atomic_t                   post_lock;      //post request process lock
+    ngx_pid_t                      post_process;   //the worker process that si performing current upstream control request
+    ngx_uint_t                     syn_conf;       //syn confidx
     ngx_event_t                    *post_unlock_ev;
-    ngx_event_t                    *ui_wait_ev;
 
     ngx_uint_t                     number;
     uc_sh_conf_t                   *conf;
 
-    ngx_atomic_t                   time_lock;
-    ngx_msec_t                     last_update;/*last_update time */
+    ngx_atomic_t                   time_lock;       /* secure access to last_update */
+    ngx_msec_t                     last_update;     /*last_update time */
 
 } uc_sh_t;
 
@@ -189,7 +198,7 @@ typedef struct
 
 typedef struct
 {
-    ngx_uint_t                     conf;  /* uc conf index */
+    ngx_uint_t                     conf;           /* uc conf index */
     uc_srv_conf_t                  *ucscf;
     ngx_http_request_t             *r;
     finalize_request_pt            original_finalize_request_handler;
@@ -229,7 +238,6 @@ static ngx_int_t uc_upload_data_to_shzone(uc_sh_conf_t *conf);
 static ngx_pid_t uc_get_post_process();
 static ngx_atomic_t *uc_get_post_lock();
 static ngx_event_t *uc_get_post_unlock_ev();
-static ngx_event_t *uc_get_ui_wait_ev();
 static ngx_uint_t uc_get_syn_conf();
 
 //synchronous functions
@@ -239,7 +247,6 @@ static void uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
 static ngx_int_t uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log);
 static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool);
 static void uc_apply_conf_post_handler(ngx_event_t *ev);
-static void uc_ui_wait_event_handler(ngx_event_t *ev);
 static void uc_post_unlock_event_handler(ngx_event_t *ev);
 static void uc_remove_applyconf_post_events(ngx_event_t *ev);
 static void uc_reset_keepalive_cache(ngx_uint_t new_keepalive, uc_srv_conf_t *ucscf, ngx_log_t *log);
@@ -297,21 +304,6 @@ static ngx_command_t  ngx_http_upstream_ctl_commands[] =
         0,
         NULL
     },
-    /*
-    { ngx_string("auth_basic"),
-    NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    ngx_conf_set_num_slot,
-    NGX_HTTP_LOC_CONF_OFFSET,
-    offsetof(ngx_http_upstream_ctl_loc_conf_t, auth),
-    NULL },
-
-    { ngx_string("auth_basic_user_file"),
-    NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    ngx_conf_set_num_slot,
-    NGX_HTTP_LOC_CONF_OFFSET,
-    offsetof(ngx_http_upstream_ctl_loc_conf_t, auth_file),
-    NULL },
-    */
     ngx_null_command
 };
 
@@ -351,9 +343,9 @@ ngx_module_t  ngx_http_upstream_ctl_module =
 
 
 /*
-* function: output a upstream server row in html script
-* note: display color is green when post is equal to real value or that is red
-*/
+ * function: output a upstream server row in html script
+ * note: display color is green when post is equal to real value or that is red
+ */
 static void
 uc_output_server(char **pui, ngx_http_upstream_srv_conf_t *uscf, ngx_http_upstream_server_t *usrv, ngx_uint_t index, ngx_uint_t groupindex, uc_sh_server_t *last_post)
 {
@@ -450,8 +442,6 @@ uc_output_server(char **pui, ngx_http_upstream_srv_conf_t *uscf, ngx_http_upstre
 
 /*
  * function: output a upstream servers group in html script
- * note: display color is green when post is equal to real value or that is red
- *       flag:0(get),1(post success),2(post timeout)
  */
 static void
 uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *ucscf, ngx_uint_t groupindex, uc_sh_conf_t *last_post, ngx_uint_t flag)
@@ -562,6 +552,9 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
     strcat(testui, (const char *)"</table></fieldset></form>");
 }
 
+/*
+ * function:output response content of html script
+ */
 static ngx_int_t
 uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag)
 {
@@ -668,6 +661,9 @@ uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx
     return ngx_http_output_filter(r, &out);
 }
 
+/*
+ * function:output server edit dialog of html script
+ */
 static void
 uc_output_editdlg(char **pui)
 {
@@ -730,9 +726,7 @@ uc_post_request_handler(ngx_http_request_t *r)
 
     if(!uc_trylock(uc_get_post_lock()))
     {
-        /*strcat(testui, (const char *)"Busying...");
-        uilen = strlen(testui);
-        */
+        //can't get post lock
         ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, "the last uc post process has been running, wait next chance");
         uc_sh_conf_t *conf;
         ngx_uint_t confidx;
@@ -747,6 +741,8 @@ uc_post_request_handler(ngx_http_request_t *r)
     }
     ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
                   "lock post");
+
+    //parse post parameter of request
     if (r->request_body == NULL || r->request_body->bufs == NULL)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no request body");
@@ -768,9 +764,17 @@ uc_post_request_handler(ngx_http_request_t *r)
         return;
     }
 
-    uc_upload_data_to_shzone(conf);
+    //upload new upstream configuration to share memory zone
+    if(uc_upload_data_to_shzone(conf) == -1)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "failed to upload post data to share memory zone");
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        uc_unlock(uc_get_post_lock());
+        return;
+    }
 
-    //syn notice
+    //notice all worker to synchronous new configuration
     ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
                    "send sig SIG_UPSTREAM_SYN to master process");
 
@@ -778,7 +782,6 @@ uc_post_request_handler(ngx_http_request_t *r)
     confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
 
     uc_syn_init(confidx, r);
-    r->blocked++;
 
     if (sigqueue(getppid(), SIG_UPSTREAM_SYN, (const union sigval)(int)confidx) == -1)
     {
@@ -1053,8 +1056,6 @@ uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *con
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_cmd_set_upstreams_admin_handler");
 
     ucmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_ctl_module);
-    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-    clcf->handler = uc_request_handler;
 
     value = cf->args->elts;    //ex:upstreams_admin on
 
@@ -1066,6 +1067,9 @@ uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *con
     else if (ngx_strcmp(value[1].data, "on") == 0)
     {
         ucmcf->upstreams_admin = UPSTREAM_CTL_ADM_ON;
+        clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+        clcf->handler = uc_request_handler;
+
         return NGX_CONF_OK;
     }
     else
@@ -1132,6 +1136,10 @@ uc_module_postconf(ngx_conf_t *cf)
     {
         return 0;
     }
+    if(sucmcf->upstreams_admin != UPSTREAM_CTL_ADM_ON)
+    {
+        return NGX_OK;
+    }
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_module_postconf");
     uc_reg_shzone(cf, sucmcf);
 
@@ -1139,6 +1147,9 @@ uc_module_postconf(ngx_conf_t *cf)
 
 }
 
+/*
+ * function:hook upstream finalize request handler when initial upstream request
+ */
 static ngx_int_t
 uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *us)
 {
@@ -1224,8 +1235,10 @@ uc_upstream_block_hook_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     if (ucmcf->original_upstream_block_cmd_set_handler)
     {
         rc = ucmcf->original_upstream_block_cmd_set_handler(cf, cmd, conf);
+
         if (rc == NGX_CONF_OK)
         {
+            //point original upstream server conf to module'server conf's upstream member
             umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
             uscfp = umcf->upstreams.elts;
             for (i = 0; i < umcf->upstreams.nelts; i++)
@@ -1522,6 +1535,40 @@ uc_module_init(ngx_cycle_t *cycle)
     {
         return NGX_OK;
     }
+    if(sucmcf->upstreams_admin != UPSTREAM_CTL_ADM_ON)
+    {
+        uc_srv_conf_t *ucscf, **ucscfp;
+        ucscfp = sucmcf->upstreams.elts;
+
+        for (i = 0; i < sucmcf->upstreams.nelts; i++)
+        {
+
+            ucscf = ucscfp[i];
+            //catch keepalive and iphash init peer handler
+            if (ucscf->kcf->original_init_peer == 0)
+            {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                              "init peer handler has an error");
+                return NGX_ERROR;
+            }
+
+            if (sucmcf->original_init_keepalive_peer == 0 && sucmcf->original_init_iphash_peer == 0)
+            {
+                sucmcf->original_init_keepalive_peer = ucscf->upstream->peer.init;
+                sucmcf->original_init_iphash_peer = ucscf->kcf->original_init_peer;
+            }
+
+            //return to real status before try keepalive and iphash
+            uc_reset_peer_init_handler(ucscf->ip_hash, ucscf->keepalive, ucscf);
+            uc_reset_keepalive_cache(ucscf->keepalive, ucscf, cycle->log);
+
+            //recover peer_init_handler
+            ucscf->upstream->peer.init = ucscf->original_peer_init_handler;
+
+
+        }
+        return NGX_OK;
+    }
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "uc_module_init");
 
@@ -1753,7 +1800,9 @@ uc_channel_add_event_hook_handler(ngx_event_t *ev, ngx_int_t event, ngx_uint_t f
 
 }
 
-
+/*
+ * function:worker's channel command handler
+ */
 static void
 uc_channel_handler(ngx_event_t *ev)
 {
@@ -1910,23 +1959,6 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
 }
 
 static void
-uc_ui_wait_event_handler(ngx_event_t *ev)
-{
-    ngx_http_request_t *r;
-    ngx_uint_t flag;
-
-    r = (ngx_http_request_t *)ev->data;
-    ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "post response timeout");
-
-    flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_TIMEOUT);
-    uc_output_ui(r, uc_get_update_days(), 0, flag);
-    r->blocked--;
-    ngx_http_finalize_request(r, NGX_DONE);
-
-
-}
-
-static void
 uc_post_unlock_event_handler(ngx_event_t *ev)
 {
     ngx_http_request_t *r;
@@ -1936,23 +1968,32 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
 
     uc_rcount_clear_zero(uc_get_syn_conf());
     uc_set_last_update();
-    ngx_event_t *ui_wait_ev;
-    ui_wait_ev = uc_get_ui_wait_ev();
-    if (ui_wait_ev->timer_set)
+
+    if (ev->timer_set)
     {
-        ngx_del_timer(ui_wait_ev);
-
-        r = (ngx_http_request_t *)ev->data;
+        //post unlock first come in
+        ngx_del_timer(ev);
+        ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "unlock post");
         flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_OK);
-        uc_output_ui(r, uc_get_update_days(), 0, flag);
-        r->blocked--;
-        ngx_http_finalize_request(r, NGX_DONE);
     }
+    else
+    {
+        //timeout
+        ngx_delete_posted_event(ev);
+        ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "post response timeout");
+        flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_TIMEOUT);
+    }
+    r = (ngx_http_request_t *)ev->data;
+    uc_output_ui(r, uc_get_update_days(), 0, flag);
+    r->blocked--;
+    ngx_http_finalize_request(r, NGX_DONE);
 
-    ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "unlock post");
     uc_unlock(uc_get_post_lock());
 }
 
+/*
+ * function:handle SIG_UPSTREAM_SYN signal of workers.run in master process.
+ */
 static void
 uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
 {
@@ -2005,6 +2046,7 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
                            ngx_processes[i].respawn,
                            ngx_processes[i].just_spawn,
                            strerror(errno));
+            continue;
         }
 
         syn_key[n].pid = ngx_processes[i].pid;
@@ -2013,6 +2055,9 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
     }
 }
 
+/*
+ * function:send CHANNEL_CMD_UPSTREAM_UNLOCK back to the launched worker process when synchronous finished
+ */
 static void
 uc_send_unlock_channel_cmd(ngx_uint_t confidx)
 {
@@ -2037,6 +2082,8 @@ uc_send_unlock_channel_cmd(ngx_uint_t confidx)
                     != NGX_OK)
             {
                 ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, ngx_errno, "failed to send CHANNEL_CMD_UPSTREAM_UNLOCK");
+
+                uc_unlock(uc_get_post_lock());
             }
 
         }
@@ -2047,6 +2094,9 @@ uc_send_unlock_channel_cmd(ngx_uint_t confidx)
     }
 }
 
+/*
+ * function:handle SIG_UPSTREAM_SYN_ACK signal of workers.run in master process.
+ */
 static void
 uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
 {
@@ -2100,11 +2150,15 @@ uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
 
             }
         }
+
         uc_send_unlock_channel_cmd(confidx);
 
     }
 }
 
+/*
+ * function:update request count when receive SIG_UPSTREAM_REQUEST_COUNT_REPORT in master process
+ */
 static void
 uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused)
 {
@@ -2130,7 +2184,9 @@ uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused)
 
 }
 
-
+/*
+ * function:send SIG_UPSTREAM_REQUEST_COUNT_REPORT when finalize a upstream request
+ */
 static void
 uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc)
 {
@@ -2155,7 +2211,7 @@ uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc)
             server = uc_get_peer_srv_index(key->conf, r->upstream->peer.name);
             if (server != -1)
             {
-                rpt = key->conf * UC_MAX_GROUPSRV_NUMBER + server;
+                rpt = key->conf * UC_MAX_GROUPSRV_NUMBER + server;//combine group index and server index for a signal value
                 if (sigqueue(getppid(), SIG_UPSTREAM_REQUEST_COUNT_REPORT, (const union sigval)(int)rpt) == -1)
                 {
                     ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno, "failed to send sig SIG_UPSTREAM_REQUEST_COUNT_REPORT.");
@@ -2167,6 +2223,11 @@ uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc)
                 key->original_finalize_request_handler(r, rc);
                 ngx_rwlock_unlock(&key->ucscf->apply_lock);
 
+                return;
+            }
+            else
+            {
+                ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno, "can't find  original_finalize_request_handler");
                 return;
             }
 
@@ -2273,17 +2334,7 @@ uc_init_shzone(ngx_shm_zone_t *shm_zone, void *data)
     ucsh->post_unlock_ev->handler = uc_post_unlock_event_handler;
     ucsh->post_unlock_ev->log = shm_zone->shm.log;
 
-    //init ui wait event
-    ucsh->ui_wait_ev = ngx_slab_calloc(shpool, sizeof(ngx_event_t));
-    if (ucsh->ui_wait_ev == NULL)
-    {
-        ngx_log_error(NGX_LOG_EMERG, shm_zone->shm.log, ngx_errno,
-                      "failed to init post unlock event");
-        return NGX_ERROR;
-    }
-    ucsh->ui_wait_ev->handler = uc_ui_wait_event_handler;
-    ucsh->ui_wait_ev->log = shm_zone->shm.log;
-
+    //alloc init conf space
     ucsh->conf = ngx_slab_calloc(shpool, sizeof(uc_sh_conf_t) * ucmcf->upstreams.nelts);
     ucscfp = (uc_srv_conf_t **)ucmcf->upstreams.elts;
 
@@ -2293,8 +2344,6 @@ uc_init_shzone(ngx_shm_zone_t *shm_zone, void *data)
         ucsh->conf[i].server = ngx_slab_calloc(shpool, sizeof(uc_sh_server_t) * ucscf->upstream->servers->nelts);
 
     }
-
-
 
     shpool->data = ucsh;
 
@@ -2350,20 +2399,9 @@ uc_get_post_unlock_ev()
     return ucsh->post_unlock_ev;
 }
 
-static ngx_event_t *
-uc_get_ui_wait_ev()
-{
-    ngx_slab_pool_t                *shpool;
-    uc_sh_t                        *ucsh;
-
-    shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
-    ucsh = (uc_sh_t *)shpool->data;
-
-    return ucsh->ui_wait_ev;
-
-}
-
-
+/*
+ * initialize synchronous, set synchronous event and block request
+ */
 static void
 uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r)
 {
@@ -2375,8 +2413,8 @@ uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r)
     ucsh->post_process = getpid();
     ucsh->syn_conf = confidx;
     ucsh->post_unlock_ev->data = r;
-    ucsh->ui_wait_ev->data = r;
-    ngx_add_timer(ucsh->ui_wait_ev, UC_WAIT_OUTTIME);
+    ngx_add_timer(ucsh->post_unlock_ev, UC_WAIT_OUTTIME);
+    r->blocked++;
 
 }
 
@@ -2562,6 +2600,9 @@ uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf
     }
 }
 
+/*
+ * function: real modify of conf
+ */
 static ngx_int_t
 uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
 {
