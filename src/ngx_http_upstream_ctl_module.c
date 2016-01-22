@@ -246,6 +246,7 @@ static void uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused);
 static ngx_int_t uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log);
 static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool);
+static void uc_reset_peers_data(uc_srv_conf_t *ucscf);
 static void uc_apply_conf_post_handler(ngx_event_t *ev);
 static void uc_post_unlock_event_handler(ngx_event_t *ev);
 static void uc_remove_applyconf_post_events(ngx_event_t *ev);
@@ -1801,7 +1802,7 @@ uc_channel_add_event_hook_handler(ngx_event_t *ev, ngx_int_t event, ngx_uint_t f
 }
 
 /*
- * function:worker's channel command handler
+ * function: worker's channel command handler
  */
 static void
 uc_channel_handler(ngx_event_t *ev)
@@ -1992,7 +1993,7 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
 }
 
 /*
- * function:handle SIG_UPSTREAM_SYN signal of workers.run in master process.
+ * function:handle SIG_UPSTREAM_SYN signal of workers. running in master process.
  */
 static void
 uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
@@ -2095,7 +2096,7 @@ uc_send_unlock_channel_cmd(ngx_uint_t confidx)
 }
 
 /*
- * function:handle SIG_UPSTREAM_SYN_ACK signal of workers.run in master process.
+ * function:handle SIG_UPSTREAM_SYN_ACK signal of workers. running in master process.
  */
 static void
 uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
@@ -2400,7 +2401,7 @@ uc_get_post_unlock_ev()
 }
 
 /*
- * initialize synchronous, set synchronous event and block request
+ * initialize synchronous data, set synchronous event and block the request
  */
 static void
 uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r)
@@ -2601,7 +2602,7 @@ uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf
 }
 
 /*
- * function: real modify of conf
+ * function: the real modification of configuration
  */
 static ngx_int_t
 uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
@@ -2647,6 +2648,10 @@ uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
 
     }
 
+    //modify peers
+    uc_reset_peers_data(ucscf);
+
+
     ucscf->ip_hash = ucscf->temp_conf->ip_hash;
 
     if (ucscf->temp_conf->ip_hash)
@@ -2666,6 +2671,51 @@ uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
     ucscf->keepalive = ucscf->temp_conf->keepalive;
 
     return 0;
+}
+
+static void
+uc_reset_peers_data(uc_srv_conf_t *ucscf)
+{
+    uc_server_t *ucsrv;
+    ngx_http_upstream_rr_peers_t *peers, *peers_backup;
+    ngx_uint_t i, n, w,nb,wb;
+
+    ucsrv = (uc_server_t *)ucscf->uc_servers->elts;
+    n = 0;
+    w = 0;
+    nb = 0;
+    wb = 0;
+    for (i = 0; i < ucscf->uc_servers->nelts; i++)
+    {
+
+        if (ucsrv[i].server->backup)
+        {
+            nb += ucsrv[i].server->naddrs;
+            wb += ucsrv[i].server->naddrs * ucsrv[i].server->weight;
+        }else{
+	    n += ucsrv[i].server->naddrs;
+            w += ucsrv[i].server->naddrs * ucsrv[i].server->weight;
+        }
+
+
+    }
+
+    peers = (ngx_http_upstream_rr_peers_t *)ucscf->upstream->peer.data;
+    peers->single = (n == 1);
+    peers->number = n;
+    peers->weighted = (w != n);
+    peers->total_weight = w;
+
+    /* backup servers */
+    peers_backup = peers->next;
+    if(peers_backup)
+    {
+        peers_backup->single = 0;
+        peers_backup->number = nb;
+        peers_backup->weighted = (wb != nb);
+        peers_backup->total_weight = wb;
+    }
+
 }
 
 static void
