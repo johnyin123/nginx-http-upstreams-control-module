@@ -34,6 +34,9 @@
 #define UC_RCOUNT_KEY_ARRAY_INIT_SIZE     5
 //synchronous wait outtime
 #define UC_WAIT_OUTTIME                   3000
+//apply configuration time span
+#define UC_APPCONF_TIMESPAN               50
+
 //user interface response flag
 #define UI_STATUS_GET                     0
 #define UI_STATUS_POST_OK                 1
@@ -250,7 +253,6 @@ static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx
 static void uc_reset_peers_data(uc_srv_conf_t *ucscf);
 static void uc_apply_conf_post_handler(ngx_event_t *ev);
 static void uc_post_unlock_event_handler(ngx_event_t *ev);
-static void uc_remove_applyconf_post_events(ngx_event_t *ev);
 static void uc_reset_keepalive_cache(ngx_uint_t new_keepalive, uc_srv_conf_t *ucscf, ngx_log_t *log);
 static void uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf_t *ucscf);
 static void uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r);
@@ -1997,9 +1999,6 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
     if (uc_trylock(&ev_data->ucscf->apply_lock))
     {
         ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "get apply conf lock");
-        //clear all uc apply conf post event
-        uc_remove_applyconf_post_events(ev);
-
         uc_apply_new_conf(ev_data->confidx, ev->log);
         uc_unlock(&ev_data->ucscf->apply_lock);
 
@@ -2012,7 +2011,7 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
     else
     {
         ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "failed to get apply conf lock,repost event");
-        ngx_post_event(ev, &ngx_posted_events);
+        ngx_add_timer(ev, UC_APPCONF_TIMESPAN);
     }
 
 }
@@ -2596,40 +2595,6 @@ uc_download_data_from_shzone(ngx_uint_t confidx)
     return 0;
 }
 
-static void
-uc_remove_applyconf_post_events(ngx_event_t *ev)
-{
-    ngx_queue_t  *q, *qr;
-    ngx_event_t  *e;
-    qr = 0;
-
-    ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0,
-                   "uc_remove_applyconf_post_events");
-
-    for (q = ngx_queue_head(&ngx_posted_events);
-            q != ngx_queue_sentinel(&ngx_posted_events);
-            q = ngx_queue_next(q))
-    {
-        if (qr)
-        {
-            ngx_queue_remove(qr);
-            e = ngx_queue_data(qr, ngx_event_t, queue);
-            e->posted = 0;
-            qr = 0;
-        }
-        e = ngx_queue_data(q, ngx_event_t, queue);
-        if (e == ev)
-        {
-            qr = q;
-        }
-    }
-    if(qr)
-    {
-        ngx_queue_remove(qr);
-        e = ngx_queue_data(qr, ngx_event_t, queue);
-        e->posted = 0;
-    }
-}
 
 static void
 uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf_t *ucscf)
