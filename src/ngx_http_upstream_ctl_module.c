@@ -43,6 +43,7 @@
 #define UI_STATUS_POST_TIMEOUT            2
 #define UI_STATUS_POST_SRV_ERR            3
 #define UI_STATUS_POST_SRV_BUSY           4
+#define UI_STATUS_POST_SRV_ZERO           5
 
 #ifndef NGX_RWLOCK_WLOCK
 #define NGX_RWLOCK_WLOCK  ((ngx_atomic_uint_t) -1)
@@ -530,7 +531,9 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
         case UI_STATUS_POST_SRV_BUSY:
             strcat(testui, (const char *)"<div class='alert alert-info' role='alert'>Server is busy, please wait for a moment and try again.</div>");
             break;
-
+        case UI_STATUS_POST_SRV_ZERO:
+            strcat(testui, (const char *)"<div class='alert alert-danger' role='alert'>No servers in this upstream (All is backup).</div>");
+            break;
         default:
             strcat(testui, (const char *)"<div class='alert alert-danger' role='alert'>An unknown error occurs in server.</div>");
 
@@ -731,38 +734,50 @@ uc_get_ui_status_flag(ngx_uint_t confidx, ngx_uint_t flag)
 static void
 uc_post_request_handler(ngx_http_request_t *r)
 {
-    ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0, "uc_post_request_handler");
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "uc_post_request_handler");
 
     if(!uc_trylock(uc_get_post_lock()))
     {
         //can't get post lock
-        ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0, "the last uc post process has been running, wait next chance");
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "the last uc post process has been running, wait next chance");
         uc_sh_conf_t *conf;
         ngx_uint_t confidx;
+        ngx_int_t rc;
 
         conf = 0;
-        if(uc_parse_post_para(r->request_body->bufs, r->pool, &conf) == -1)
+        rc = uc_parse_post_para(r->request_body->bufs, r->pool, &conf);
+        if( rc == -1)
         {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "page dismatch error.please refresh and try again");
             uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0);
         }
-        if(conf == 0)
-        {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "failed to parse post para.");
-            uc_output_ui(r, uc_get_update_days(), 0, 0);
-        }
         else
         {
-            confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
-            uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_BUSY));
+            if(conf == 0)
+            {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "failed to parse post para.");
+                uc_output_ui(r, uc_get_update_days(), 0, 0);
+            }
+            else
+            {
+                confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
+                if(rc == 1)
+                {
+                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO));
+                }
+                else
+                {
+                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_BUSY));
+                }
+            }
         }
 
         ngx_http_finalize_request(r, NGX_OK);
         return;
     }
-    ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                    "lock post");
 
     //parse post parameter of request
@@ -775,8 +790,12 @@ uc_post_request_handler(ngx_http_request_t *r)
     }
 
     uc_sh_conf_t *conf;
+    ngx_int_t rc;
+    ngx_uint_t confidx;
     conf = 0;
-    if(uc_parse_post_para(r->request_body->bufs, r->pool, &conf) == -1)
+
+    rc = uc_parse_post_para(r->request_body->bufs, r->pool, &conf);
+    if( rc == -1)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "page dismatch error.please refresh and try again");
@@ -785,14 +804,30 @@ uc_post_request_handler(ngx_http_request_t *r)
         uc_unlock(uc_get_post_lock());
         return;
     }
-
-    if(conf == 0)
+    else
     {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "failed to parse post para.");
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-        uc_unlock(uc_get_post_lock());
-        return;
+
+        if(conf == 0)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "failed to parse post para");
+            ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            uc_unlock(uc_get_post_lock());
+            return;
+        }
+        else
+        {
+            if(rc == 1)
+            {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "no server in the upstream");
+                confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
+                uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO));
+                ngx_http_finalize_request(r, NGX_OK);
+                uc_unlock(uc_get_post_lock());
+                return;
+            }
+        }
     }
 
     //upload new upstream configuration to share memory zone
@@ -806,10 +841,10 @@ uc_post_request_handler(ngx_http_request_t *r)
     }
 
     //notice all worker to synchronous new configuration
-    ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                    "send sig SIG_UPSTREAM_SYN to master process");
 
-    ngx_uint_t confidx;
+
     confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
 
     uc_syn_init(confidx, r);
@@ -901,9 +936,17 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
         ucscf = uc_get_srv_conf_byhost(sucmcf, &conf->host);
         if(ucscf == NULL)
         {
+            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                          "request group name dismatch runing group name");
             return -1;
         }
         conf->server = ngx_pcalloc(pool, sizeof(uc_sh_server_t) * ucscf->upstream->servers->nelts);
+        if(conf->server == NULL)
+        {
+            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                          "failed to alloc uc_sh_server_t when parse post para and assign value");
+            return -1;
+        }
         conf->num = ucscf->upstream->servers->nelts;
 
     }
@@ -957,6 +1000,8 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
     }
     else
     {
+        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                      "post para dosen't exist");
         return -1;
     }
     return 0;
@@ -985,6 +1030,12 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
 
     //copy chain's content to single buffer
     start = (char *)ngx_pcalloc(pool, blen);
+    if(start == NULL)
+    {
+        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                      "faile to alloc buffer when copy chain content");
+        return -1;
+    }
     end = start + blen;
 
     b = start;
@@ -998,6 +1049,13 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
 
     //parse buffer to node struct
     head = ngx_pcalloc(pool, sizeof(uc_node_t));
+    if(head == NULL)
+    {
+        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                      "faile to alloc node when parse node struct");
+        return -1;
+    }
+
     iter = head;
 
 
@@ -1026,6 +1084,13 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
         {
             *token = 0;
             iter->next = ngx_pcalloc(pool, sizeof(uc_node_t));
+            if(iter->next == NULL)
+            {
+                ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                              "faile to alloc node when parse node struct");
+                return -1;
+            }
+
             iter = iter->next;
             iter->name = token + 1;
         }
@@ -1047,6 +1112,12 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
 
     //parse node struct to uc_sh_conf_t struct
     conf = ngx_pcalloc(pool, sizeof(uc_sh_conf_t));
+    if(conf == NULL)
+    {
+        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                      "faile to alloc uc_sh_conf_t when parse post para");
+        return -1;
+    }
 
     i = 0;
     iter = head;
@@ -1060,9 +1131,31 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
     if(conf->num != i)
     {
+        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                      "request server row count dismatch runing server row count");
         return -1;
     }
+
     *confp = conf;
+
+    //if all server is backup a mistacke will occur
+    ngx_uint_t active_peer;
+    active_peer = 0;
+    for(i = 0; i < conf->num; i++)
+    {
+        if(!conf->server[i].server.backup)
+        {
+            active_peer++;
+        }
+    }
+    if(active_peer == 0)
+    {
+        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                      "all server is backup server");
+        return 1;
+    }
+
+
     return 0;
 }
 
@@ -1091,15 +1184,15 @@ uc_request_handler(ngx_http_request_t *r)
 
     if (r->method & NGX_HTTP_POST)
     {
-        ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                        "uc_request_handler this is a post request.");
         ngx_http_read_client_request_body(r, uc_post_request_handler);
-        return NGX_OK;
+        return NGX_DONE;
     }
     else
     {
 
-        ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                        "uc_request_handler this is a get request.");
 
         return uc_output_ui(r, uc_get_update_days(), 0, UI_STATUS_GET);
@@ -1217,7 +1310,7 @@ uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_upstream_srv_conf_
     uc_srv_conf_t *ucscf, **ucscfp;
     ngx_uint_t    i;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                    "uc_request_count_hook_handler");
     ucscfp = sucmcf->upstreams.elts;
     for (i = 0; i < sucmcf->upstreams.nelts; i++)
@@ -1248,7 +1341,7 @@ uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_upstream_srv_conf_
             {
                 key->original_finalize_request_handler = r->upstream->finalize_request;
                 r->upstream->finalize_request = uc_sig_rcount_rpt_handler;
-                ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+                ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                                "hook upstream finalize_request using uc_sig_rcount_rpt_handler");
             }
             key->conf = i;
@@ -1259,7 +1352,7 @@ uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_upstream_srv_conf_
 
             ngx_http_upstream_init_peer_pt peer_init_handler;
             ngx_rwlock_rlock(&ucscf->apply_lock);
-            ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0,
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                            "lock before upstream peer init handle");
             peer_init_handler = ucscf->original_peer_init_handler;
             if (peer_init_handler)
@@ -1818,7 +1911,17 @@ uc_module_init(ngx_cycle_t *cycle)
 
         //init temporary conf
         ucscf->temp_conf = ngx_pcalloc(cycle->pool, sizeof(uc_sh_conf_t));
+        if(ucscf->temp_conf == NULL)
+        {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                          "failed to alloc temporary conf space");
+        }
         ucscf->temp_conf->server = ngx_pcalloc(cycle->pool, sizeof(uc_sh_server_t) * ucscf->upstream->servers->nelts);
+        if(ucscf->temp_conf->server == NULL)
+        {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                          "failed to alloc temporary conf's server space");
+        }
     }
 
     //init rcount key
@@ -1998,7 +2101,7 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
 
     if (uc_trylock(&ev_data->ucscf->apply_lock))
     {
-        ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "get apply conf lock");
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "get apply conf lock");
         uc_apply_new_conf(ev_data->confidx, ev->log);
         uc_unlock(&ev_data->ucscf->apply_lock);
 
@@ -2010,7 +2113,7 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
     }
     else
     {
-        ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "failed to get apply conf lock,repost event");
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "failed to get apply conf lock,repost event");
         ngx_add_timer(ev, UC_APPCONF_TIMESPAN);
     }
 
@@ -2022,7 +2125,7 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
     ngx_http_request_t *r;
     ngx_uint_t flag;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "uc_post_unlock_event_handler");
+    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "uc_post_unlock_event_handler");
 
     uc_rcount_clear_zero(uc_get_syn_conf());
     uc_set_last_update();
@@ -2031,14 +2134,14 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
     {
         //post unlock first come in
         ngx_del_timer(ev);
-        ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "unlock post");
+        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "unlock post");
         flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_OK);
     }
     else
     {
         //timeout
         ngx_delete_posted_event(ev);
-        ngx_log_debug0(NGX_LOG_DEBUG, ev->log, 0, "post response timeout");
+        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "post response timeout");
         flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_TIMEOUT);
     }
     r = (ngx_http_request_t *)ev->data;
@@ -2061,7 +2164,7 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
     ngx_uint_t confidx;
 
     confidx = (ngx_uint_t)sig_info->si_value.sival_int;
-    ngx_log_debug0(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ngx_cycle->log, 0,
                    "uc_sig_syn_handler");
 
     ngx_memzero(&ch, sizeof(ngx_channel_t));
@@ -2167,7 +2270,7 @@ uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
     pid = sig_info->si_pid;
     confidx = (ngx_uint_t)sig_info->si_value.sival_int;
 
-    ngx_log_debug0(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
                    "uc_sig_syn_ack_handler");
 
 
@@ -2224,13 +2327,13 @@ uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused)
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, ngx_cycle->log, 0, "uc_sig_rcount_write_handler");
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0, "uc_sig_rcount_write_handler");
 
     rpt = (ngx_uint_t)sig_info->si_value.sival_int;
     group = rpt / UC_MAX_GROUPSRV_NUMBER;
     server = rpt % UC_MAX_GROUPSRV_NUMBER;
 
-    ngx_log_debug2(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+    ngx_log_debug2(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
                    "receive SIG_UPSTREAM_REQUEST_COUNT_REPORT sig param:group(%d), server(%d)", group, server);
 
     shpool = (ngx_slab_pool_t *) sucmcf->shm_zone->shm.addr;
@@ -2251,7 +2354,7 @@ uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc)
     uc_rcount_key_t *key;
     ngx_queue_t *q;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, r->connection->log, 0, "uc_sig_rcount_rpt_handler");
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "uc_sig_rcount_rpt_handler");
     for (q = ngx_queue_head(&sucmcf->rcount_use_queue);
             q != ngx_queue_sentinel(&sucmcf->rcount_use_queue);
             q = ngx_queue_next(q))
@@ -2275,12 +2378,16 @@ uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc)
                     ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno, "failed to send sig SIG_UPSTREAM_REQUEST_COUNT_REPORT.");
                 }
             }
+            else
+            {
+                ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "failed to get peer srv index. conf:%d,peer:%V", key->conf, r->upstream->peer.name);
+            }
 
             if (key->original_finalize_request_handler)
             {
                 key->original_finalize_request_handler(r, rc);
                 ngx_rwlock_unlock(&key->ucscf->apply_lock);
-
+                ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "unlock apply lock");
                 return;
             }
             else
@@ -2320,7 +2427,7 @@ uc_rcount_clear_zero(ngx_uint_t confidx)
     uc_srv_conf_t *ucscf, **ucscfp;
     ngx_uint_t i;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, ngx_cycle->log, 0, "uc_rcount_clear_zero");
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0, "uc_rcount_clear_zero");
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
@@ -2482,7 +2589,7 @@ uc_set_last_update()
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, sucmcf->shm_zone->shm.log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
                    "uc_set_last_update");
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
@@ -2531,7 +2638,7 @@ uc_upload_data_to_shzone(uc_sh_conf_t *conf)
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, sucmcf->shm_zone->shm.log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
                    "uc_upload_data_to_shzone");
     confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
     if (confidx != -1)
@@ -2571,7 +2678,7 @@ uc_download_data_from_shzone(ngx_uint_t confidx)
     ngx_uint_t i;
     uc_srv_conf_t *ucscf, **ucscfp;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, sucmcf->shm_zone->shm.log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
                    "uc_download_data_from_shzone");
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
@@ -2599,7 +2706,7 @@ uc_download_data_from_shzone(ngx_uint_t confidx)
 static void
 uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf_t *ucscf)
 {
-    ngx_log_debug0(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
                    "uc_reset_peer_init_handler");
 
     if (ip_hash && keepalive)
@@ -2633,7 +2740,7 @@ uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
     uc_srv_conf_t *ucscf, **ucscfp;
     uc_server_t *ucsrv;
 
-    ngx_log_debug0(NGX_LOG_DEBUG, log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, log, 0,
                    "uc_apply_new_conf");
 
     ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
@@ -2747,7 +2854,7 @@ static void
 uc_reset_keepalive_cache(ngx_uint_t new_keepalive, uc_srv_conf_t *ucscf, ngx_log_t *log)
 {
 
-    ngx_log_debug0(NGX_LOG_DEBUG, log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, log, 0,
                    "uc_reset_keepalive_cache");
 
     if (new_keepalive > ucscf->kcf->max_cached)
@@ -2843,7 +2950,7 @@ static ngx_int_t
 uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool)
 {
 
-    ngx_log_debug0(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
                    "uc_backup_peers_switch");
 
 
