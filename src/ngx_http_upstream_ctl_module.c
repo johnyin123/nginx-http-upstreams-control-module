@@ -932,7 +932,14 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
         char *host;
         host = uc_parse_conf_name(name);
         conf->host.len = strlen(host);
-        conf->host.data = (u_char *)host;
+        conf->host.data = ngx_pcalloc(pool, conf->host.len);
+        if(conf->host.data==NULL){
+            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                          "failed to alloc post host para space");
+            return -1;
+        }
+        ngx_memcpy(conf->host.data,host,conf->host.len);
+
         ucscf = uc_get_srv_conf_byhost(sucmcf, &conf->host);
         if(ucscf == NULL)
         {
@@ -954,7 +961,14 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
     {
         if((*index) >= conf->num)  return -1;
         conf->server[*index].server.name.len = strlen(value);
-        conf->server[*index].server.name.data = (u_char *)value;
+        conf->server[*index].server.name.data = ngx_pcalloc(pool, conf->server[*index].server.name.len);
+        if(conf->server[*index].server.name.data==NULL){
+            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
+                          "failed to alloc post server name para space");
+            return -1;
+        }
+        ngx_memcpy(conf->server[*index].server.name.data,value,conf->server[*index].server.name.len);       
+
 
     }
     else if(uc_cmp_name_key(name, "[weight]") == 0)
