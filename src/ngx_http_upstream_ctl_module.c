@@ -933,12 +933,13 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
         host = uc_parse_conf_name(name);
         conf->host.len = strlen(host);
         conf->host.data = ngx_pcalloc(pool, conf->host.len);
-        if(conf->host.data==NULL){
+        if(conf->host.data == NULL)
+        {
             ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
                           "failed to alloc post host para space");
             return -1;
         }
-        ngx_memcpy(conf->host.data,host,conf->host.len);
+        ngx_memcpy(conf->host.data, host, conf->host.len);
 
         ucscf = uc_get_srv_conf_byhost(sucmcf, &conf->host);
         if(ucscf == NULL)
@@ -962,12 +963,13 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
         if((*index) >= conf->num)  return -1;
         conf->server[*index].server.name.len = strlen(value);
         conf->server[*index].server.name.data = ngx_pcalloc(pool, conf->server[*index].server.name.len);
-        if(conf->server[*index].server.name.data==NULL){
+        if(conf->server[*index].server.name.data == NULL)
+        {
             ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
                           "failed to alloc post server name para space");
             return -1;
         }
-        ngx_memcpy(conf->server[*index].server.name.data,value,conf->server[*index].server.name.len);       
+        ngx_memcpy(conf->server[*index].server.name.data, value, conf->server[*index].server.name.len);
 
 
     }
@@ -2967,7 +2969,8 @@ uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
                    "uc_backup_peers_switch");
 
-
+    ngx_http_upstream_rr_peer_t *p;
+    p = xpeerp[xserver->naddrs - 1]->next;
     if (xserver->backup)
     {
         //append to non-backup peer link
@@ -3008,11 +3011,11 @@ uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr
                 {
                     if (peerold)
                     {
-                        peerold->next = xpeerp[xserver->naddrs - 1]->next;
+                        peerold->next = p;
                     }
                     else
                     {
-                        peers_backup->peer = xpeerp[xserver->naddrs - 1]->next;
+                        peers_backup->peer = p;
                     }
                     break;
                 }
@@ -3083,11 +3086,11 @@ uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr
             {
                 if (peerold)
                 {
-                    peerold->next = xpeerp[xserver->naddrs - 1]->next;
+                    peerold->next = p;
                 }
                 else
                 {
-                    peers->peer = xpeerp[xserver->naddrs - 1]->next;
+                    peers->peer = p;
                 }
                 break;
             }
