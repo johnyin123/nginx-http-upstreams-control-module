@@ -1557,12 +1557,13 @@ uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer)
 
     ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
     ucscf = (uc_srv_conf_t *)ucscfp[conf];
+    ucsrv = (uc_server_t *)ucscf->uc_servers->elts;
+
     for (i = 0; i < ucscf->uc_servers->nelts; i++)
     {
-        ucsrv = (uc_server_t *)ucscf->uc_servers->elts;
         for (j = 0; j < ucsrv[i].server->naddrs; j++)
         {
-            if (ngx_strncmp(peer->data, ucsrv[i].running_server[j]->name.data, ucsrv[i].running_server[j]->name.len) == 0)
+            if (ngx_strcmp(peer->data, ucsrv[i].running_server[j]->name.data) == 0)
             {
                 return i;
             }
@@ -1914,7 +1915,7 @@ uc_module_init(ngx_cycle_t *cycle)
                 peer = peers->peer;
                 while (peer != 0)
                 {
-                    if (ngx_strncmp(peer->server.data, ussrv[j].name.data, ussrv[j].name.len) == 0)
+                    if (ngx_strcmp(peer->server.data, ussrv[j].name.data) == 0)
                     {
                         ucsrv->running_server[k] = peer;
                         k++;
