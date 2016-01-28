@@ -56,21 +56,20 @@
 #define uc_get_display_value(item) ((last_post) ? last_post->server.item : usrv->item)
 #define uc_get_display_string(item) ((last_post) ? &uc_##item[last_post->server.item] : &uc_##item[usrv->item])
 
-static ngx_str_t uc_backup[] = {ngx_string("No"), ngx_string("Yes")};
-static ngx_str_t uc_down[] = {ngx_string("Normal"), ngx_string("Down")};
-static ngx_str_t uc_enable[] = {ngx_string("disable"), ngx_string("enable")};
-
-extern ngx_module_t ngx_http_upstream_module;
-extern ngx_module_t ngx_http_upstream_ip_hash_module;
-extern ngx_module_t ngx_http_upstream_keepalive_module;
-extern ngx_uint_t   ngx_process;
-extern ngx_queue_t  ngx_posted_events;
-
 
 typedef char *(*cmd_set_pt)(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 typedef ngx_int_t(*add_event_pt)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
 typedef void(*channel_pt)(ngx_event_t *ev);
 typedef void(*finalize_request_pt)(ngx_http_request_t *r, ngx_int_t rc);
+typedef void(*sigchld_pt)(int signo);
+
+typedef struct   /* copy from ngx_process.c */
+{
+    int     signo;
+    char   *signame;
+    char   *name;
+    void  (*handler)(int signo);
+} ngx_signal_t;
 
 typedef struct  /* copy from ngx_http_upstream_keepalive_module */
 {
@@ -116,6 +115,8 @@ typedef struct
     cmd_set_pt         original_upstream_block_cmd_set_handler;
     add_event_pt       original_add_event_handler;
     channel_pt         original_channel_handler;
+    sigchld_pt         original_sigchld_handler;
+
     ngx_http_upstream_init_peer_pt original_init_keepalive_peer;//ngx_http_upstream_keepalive_module 's peer init function pointer
     ngx_http_upstream_init_peer_pt original_init_iphash_peer;   //ngx_http_upstream_iphash_module 's peer init function pointer
 
@@ -249,6 +250,7 @@ static ngx_uint_t uc_get_syn_conf();
 static void uc_channel_handler(ngx_event_t *ev);
 static void uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused);
+static void uc_sigchld_handler(int signo);
 static ngx_int_t uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log);
 static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool);
 static void uc_reset_peers_data(uc_srv_conf_t *ucscf);
@@ -297,6 +299,18 @@ static ngx_int_t uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer);
 static ngx_uint_t uc_queue_move(ngx_queue_t *from, ngx_queue_t *to, ngx_uint_t number);
 
 
+//////////////////////////////////////////////////////////
+
+extern ngx_module_t ngx_http_upstream_module;
+extern ngx_module_t ngx_http_upstream_ip_hash_module;
+extern ngx_module_t ngx_http_upstream_keepalive_module;
+extern ngx_uint_t   ngx_process;
+extern ngx_queue_t  ngx_posted_events;
+extern ngx_signal_t  signals[];
+
+static ngx_str_t uc_backup[] = {ngx_string("No"), ngx_string("Yes")};
+static ngx_str_t uc_down[] = {ngx_string("Normal"), ngx_string("Down")};
+static ngx_str_t uc_enable[] = {ngx_string("disable"), ngx_string("enable")};
 static uc_main_conf_t *sucmcf = 0;
 
 static ngx_command_t  ngx_http_upstream_ctl_commands[] =
@@ -1563,7 +1577,8 @@ uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer)
     {
         for (j = 0; j < ucsrv[i].server->naddrs; j++)
         {
-            if (ngx_strcmp(peer->data, ucsrv[i].running_server[j]->name.data) == 0)
+            if ((peer->len == ucsrv[i].running_server[j]->name.len)
+                    && (ngx_strncmp(peer->data, ucsrv[i].running_server[j]->name.data, peer->len) == 0))
             {
                 return i;
             }
@@ -1684,6 +1699,7 @@ uc_module_create_main_conf(ngx_conf_t *cf)
         ucmcf->original_channel_handler = sucmcf->original_channel_handler;
         ucmcf->original_init_keepalive_peer = sucmcf->original_init_keepalive_peer;
         ucmcf->original_init_iphash_peer = sucmcf->original_init_iphash_peer;
+        ucmcf->original_sigchld_handler = sucmcf->original_sigchld_handler;
     }
     sucmcf = ucmcf;
 
@@ -1701,11 +1717,13 @@ uc_module_init(ngx_cycle_t *cycle)
     ngx_event_module_t  *m;
     uc_main_conf_t      *ucmcf;
     uc_syn_key_t        *syn_key;
+    ngx_signal_t        *sig;
 
     if(ngx_process == NGX_PROCESS_SIGNALLER)
     {
         return NGX_OK;
     }
+
     if(sucmcf->upstreams_admin != UPSTREAM_CTL_ADM_ON)
     {
         uc_srv_conf_t *ucscf, **ucscfp;
@@ -1742,6 +1760,21 @@ uc_module_init(ngx_cycle_t *cycle)
     }
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "uc_module_init");
+
+    //setup SIGCHLD hook handler
+    for (sig = signals; sig->signo != 0; sig++)
+    {
+        if(ngx_strcmp(sig->signame, "SIGCHLD") == 0)
+        {
+            if(uc_sigchld_handler != sig->handler)
+            {
+                sucmcf->original_sigchld_handler = sig->handler;
+                sig->handler = uc_sigchld_handler;
+            }
+            break;
+        }
+    }
+
 
     //install channel add event hook
     cf = ngx_get_conf(cycle->conf_ctx, ngx_events_module);
@@ -1915,7 +1948,8 @@ uc_module_init(ngx_cycle_t *cycle)
                 peer = peers->peer;
                 while (peer != 0)
                 {
-                    if (ngx_strcmp(peer->server.data, ussrv[j].name.data) == 0)
+                    if((peer->server.len == ussrv[j].name.len)
+                            && (ngx_strncmp(peer->server.data, ussrv[j].name.data, ussrv[j].name.len) == 0))
                     {
                         ucsrv->running_server[k] = peer;
                         k++;
@@ -2168,6 +2202,33 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
 
     uc_unlock(uc_get_post_lock());
 }
+
+/*
+ * function:worker core dump unlock post.
+ */
+static void
+uc_sigchld_handler(int signo)
+{
+    sucmcf->original_sigchld_handler(signo);
+
+    ngx_int_t i;
+    for (i = 0; i < ngx_last_process; i++)
+    {
+        if ((ngx_processes[i].exited == 1)                  //process exited
+                && (WIFSIGNALED(ngx_processes[i].status))        //process fail exited
+                //&&(ngx_processes[i].pid == uc_get_post_process())  //because any a worker process core dump the post will fail
+           )
+        {
+            ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno,
+                          "process %d core dumped, unlock post", ngx_processes[i].pid);
+            //unlock post
+            uc_unlock(uc_get_post_lock());
+            break;
+        }
+    }
+
+}
+
 
 /*
  * function:handle SIG_UPSTREAM_SYN signal of workers. running in master process.
@@ -2972,6 +3033,7 @@ uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr
 
     ngx_http_upstream_rr_peer_t *p;
     p = xpeerp[xserver->naddrs - 1]->next;
+
     if (xserver->backup)
     {
         //append to non-backup peer link
