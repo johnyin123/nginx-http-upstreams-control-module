@@ -49,6 +49,10 @@
 #define NGX_RWLOCK_WLOCK  ((ngx_atomic_uint_t) -1)
 #endif
 
+#ifndef NGX_RWLOCK_SPIN
+#define NGX_RWLOCK_SPIN  2048
+#endif
+
 #define uc_trylock(lock)  (*(lock) == 0 && ngx_atomic_cmp_set(lock, 0, NGX_RWLOCK_WLOCK))
 #define uc_unlock(lock)    *(lock) = 0
 
@@ -168,6 +172,8 @@ typedef struct
     uc_sh_conf_t                           *temp_conf;                /* the temporary conf for syn */
 
     ngx_atomic_t                           apply_lock;                /* secure access for apply new conf */
+    ngx_uint_t                             apply_lock_tries;          /* apply lock lazy read control */
+
     ngx_event_t                            *apply_ev;
 
 } uc_srv_conf_t;
@@ -260,6 +266,9 @@ static void uc_reset_keepalive_cache(ngx_uint_t new_keepalive, uc_srv_conf_t *uc
 static void uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf_t *ucscf);
 static void uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r);
 static void uc_send_unlock_channel_cmd(ngx_uint_t confidx);
+static ngx_int_t uc_apply_lock_trylock(ngx_atomic_t *lock, ngx_uint_t *tries);
+static void uc_apply_lock_rlock(ngx_atomic_t *lock, ngx_uint_t *tries);
+static void uc_apply_lock_unlock(ngx_atomic_t *lock, ngx_uint_t *tries);
 
 //request count functions
 static void uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused);
@@ -360,6 +369,100 @@ ngx_module_t  ngx_http_upstream_ctl_module =
 };
 
 
+/*
+ * function: uc apply lock 's try lock. a lock try will not wait and return immediatly.
+ * 1.this is a lazy read lock. a new read will wait after a write try.
+ * 2.this is a local lock. it only work within a process
+ */
+static ngx_int_t
+uc_apply_lock_trylock( ngx_atomic_t *lock, ngx_uint_t *tries)
+{
+
+    if (*(lock) == 0 && ngx_atomic_cmp_set(lock, 0, NGX_RWLOCK_WLOCK))
+    {
+        *tries = 0;
+        return 1;
+    }
+    else
+    {
+        (*tries)++;
+        return 0;
+    }
+}
+
+/*
+ * function: uc apply lock 's read lock.
+ * 1.this is a lazy read lock. a new read will wait after a write try.
+ * 2.this is a local lock. it only work within a process
+ */
+static void
+uc_apply_lock_rlock(ngx_atomic_t *lock, ngx_uint_t *tries)
+{
+    ngx_uint_t         i, n;
+    ngx_atomic_uint_t  readers;
+
+    for ( ;; )
+    {
+        readers = *lock;
+
+        if (readers != NGX_RWLOCK_WLOCK
+                && (*tries) == 0
+                && ngx_atomic_cmp_set(lock, readers, readers + 1))
+        {
+            return;
+        }
+
+        if (ngx_ncpu > 1)
+        {
+
+            for (n = 1; n < NGX_RWLOCK_SPIN; n <<= 1)
+            {
+
+                for (i = 0; i < n; i++)
+                {
+                    ngx_cpu_pause();
+                }
+
+                readers = *lock;
+
+                if (readers != NGX_RWLOCK_WLOCK
+                        && (*tries) == 0
+                        && ngx_atomic_cmp_set(lock, readers, readers + 1))
+                {
+                    return;
+                }
+            }
+        }
+
+        ngx_sched_yield();
+    }
+}
+
+static void
+uc_apply_lock_unlock(ngx_atomic_t *lock, ngx_uint_t *tries)
+{
+    ngx_atomic_uint_t  readers;
+
+    readers = *lock;
+
+    if (readers == NGX_RWLOCK_WLOCK)
+    {
+        *lock = 0;
+        *tries = 0;
+        return;
+    }
+
+    for ( ;; )
+    {
+
+        if (ngx_atomic_cmp_set(lock, readers, readers - 1))
+        {
+            return;
+        }
+
+        readers = *lock;
+    }
+}
 
 /*
  * function: output a upstream server row in html script
@@ -1381,7 +1484,9 @@ uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_upstream_srv_conf_
             ngx_queue_insert_head(&sucmcf->rcount_use_queue, q);
 
             ngx_http_upstream_init_peer_pt peer_init_handler;
-            ngx_rwlock_rlock(&ucscf->apply_lock);
+
+            uc_apply_lock_rlock(&ucscf->apply_lock, &ucscf->apply_lock_tries);
+
             ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                            "lock before upstream peer init handle");
             peer_init_handler = ucscf->original_peer_init_handler;
@@ -2150,11 +2255,11 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
     uc_event_data_t *ev_data;
     ev_data = (uc_event_data_t *)ev->data;
 
-    if (uc_trylock(&ev_data->ucscf->apply_lock))
+    if(uc_apply_lock_trylock(&ev_data->ucscf->apply_lock, &ev_data->ucscf->apply_lock_tries))
     {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "get apply conf lock");
         uc_apply_new_conf(ev_data->confidx, ev->log);
-        uc_unlock(&ev_data->ucscf->apply_lock);
+        uc_apply_lock_unlock(&ev_data->ucscf->apply_lock, &ev_data->ucscf->apply_lock_tries);
 
         if (sigqueue(getppid(), SIG_UPSTREAM_SYN_ACK, (const union sigval)(int)ev_data->confidx) == -1)
         {
@@ -2464,7 +2569,7 @@ uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc)
             if (key->original_finalize_request_handler)
             {
                 key->original_finalize_request_handler(r, rc);
-                ngx_rwlock_unlock(&key->ucscf->apply_lock);
+                uc_apply_lock_unlock(&key->ucscf->apply_lock, &key->ucscf->apply_lock_tries);
                 ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "unlock apply lock");
                 return;
             }
