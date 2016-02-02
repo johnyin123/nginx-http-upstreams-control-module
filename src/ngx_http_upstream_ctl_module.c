@@ -2296,7 +2296,9 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
     else
     {
         //timeout
-        ngx_delete_posted_event(ev);
+        if(ev->posted==1){
+            ngx_delete_posted_event(ev);
+        }
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "post response timeout");
         flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_TIMEOUT);
     }
