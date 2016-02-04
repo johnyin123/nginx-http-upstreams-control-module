@@ -2238,7 +2238,10 @@ uc_channel_handler(ngx_event_t *ev)
         {
             ngx_event_t *unlock_ev;
             unlock_ev = uc_get_post_unlock_ev();
-            ngx_post_event(unlock_ev, &ngx_posted_events);
+            if(unlock_ev->timer_set)
+            {
+                ngx_post_event(unlock_ev, &ngx_posted_events);
+            }
         }
 
         break;
@@ -2304,9 +2307,11 @@ uc_post_unlock_event_handler(ngx_event_t *ev)
         flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_TIMEOUT);
     }
     r = (ngx_http_request_t *)ev->data;
-    uc_output_ui(r, uc_get_update_days(), 0, flag);
-    r->blocked--;
-    ngx_http_finalize_request(r, NGX_DONE);
+    if(!r->header_sent){
+        uc_output_ui(r, uc_get_update_days(), 0, flag);
+        r->blocked--;
+        ngx_http_finalize_request(r, NGX_DONE);
+    }
 
     uc_unlock(uc_get_post_lock());
 }
