@@ -16,7 +16,7 @@
 
 //channel command define
 #define CHANNEL_CMD_UPSTREAM_SYN          1024
-#define CHANNEL_CMD_UPSTREAM_UNLOCK       1025
+#define CHANNEL_CMD_UPSTREAM_FINALIZE_REQ 1025
 
 //module command value define
 #define UPSTREAM_CTL_ADM_OFF              0
@@ -107,7 +107,6 @@ typedef struct
 
 } uc_server_t;
 
-
 typedef struct
 {
     ngx_flag_t         upstreams_admin;
@@ -126,6 +125,8 @@ typedef struct
 
     ngx_array_t        *syn_key;  /* array member type is uc_syn_key_t */
     ngx_queue_t        syn_queue;
+
+    ngx_event_t        *timeout_ev;
 
     ngx_array_t        *rcount_key; /* array member type is uc_rcount_key_t */
     ngx_queue_t        rcount_use_queue;
@@ -182,15 +183,30 @@ typedef struct
 {
     uc_srv_conf_t *ucscf;
     ngx_uint_t    confidx;
+    ngx_int_t     post_id;
+    ngx_socket_t  fd;      //take place
 
 } uc_event_data_t;
+
+
+typedef struct
+{
+    ngx_int_t       post_id;
+    ngx_pid_t       status_code;
+    ngx_int_t       post_pid;
+    ngx_http_request_t   *r;
+    ngx_uint_t      syn_conf;                 //syn confidx
+
+} uc_post_status_t;
 
 typedef struct /* used to share memory zone */
 {
     ngx_atomic_t                   post_lock;      //post request process lock
-    ngx_pid_t                      post_process;   //the worker process that si performing current upstream control request
-    ngx_uint_t                     syn_conf;       //syn confidx
-    ngx_event_t                    *post_unlock_ev;
+    //ngx_pid_t                      post_process;   //the worker process that si performing current upstream control request
+    //ngx_uint_t                     syn_conf;       //syn confidx
+
+    uc_post_status_t               post_status;
+    ngx_atomic_t                   status_lock;
 
     ngx_uint_t                     number;
     uc_sh_conf_t                   *conf;
@@ -249,7 +265,6 @@ static ngx_int_t uc_download_data_from_shzone(ngx_uint_t confidx);
 static ngx_int_t uc_upload_data_to_shzone(uc_sh_conf_t *conf);
 static ngx_pid_t uc_get_post_process();
 static ngx_atomic_t *uc_get_post_lock();
-static ngx_event_t *uc_get_post_unlock_ev();
 static ngx_uint_t uc_get_syn_conf();
 
 //synchronous functions
@@ -261,14 +276,19 @@ static ngx_int_t uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log);
 static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool);
 static void uc_reset_peers_data(uc_srv_conf_t *ucscf);
 static void uc_apply_conf_post_handler(ngx_event_t *ev);
-static void uc_post_unlock_event_handler(ngx_event_t *ev);
+static void uc_post_timeout_event_handler(ngx_event_t *ev);
 static void uc_reset_keepalive_cache(ngx_uint_t new_keepalive, uc_srv_conf_t *ucscf, ngx_log_t *log);
 static void uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf_t *ucscf);
-static void uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r);
-static void uc_send_unlock_channel_cmd(ngx_uint_t confidx);
+static void uc_syn_init(ngx_int_t post_id,ngx_uint_t confidx, ngx_http_request_t *r);
+static void uc_send_finalize_req_channel_cmd(ngx_int_t post_id);
 static ngx_int_t uc_apply_lock_trylock(ngx_atomic_t *lock, ngx_uint_t *tries);
 static void uc_apply_lock_rlock(ngx_atomic_t *lock, ngx_uint_t *tries);
 static void uc_apply_lock_unlock(ngx_atomic_t *lock, ngx_uint_t *tries);
+static ngx_int_t uc_post_status_is_valid(ngx_int_t post_id,uc_post_status_t *post_status);
+static void uc_finalize_post_request(ngx_http_request_t *r,ngx_int_t rc);
+static void uc_set_post_status_code(ngx_int_t code);
+static void uc_get_post_status(uc_post_status_t *post_status);
+static ngx_int_t uc_new_post_id();
 
 //request count functions
 static void uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused);
@@ -946,7 +966,10 @@ uc_post_request_handler(ngx_http_request_t *r)
             }
         }
     }
-
+ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+                          "NEW POST BEFORE");
+    ngx_int_t post_id;    
+    post_id=uc_new_post_id();
     //upload new upstream configuration to share memory zone
     if(uc_upload_data_to_shzone(conf) == -1)
     {
@@ -964,9 +987,9 @@ uc_post_request_handler(ngx_http_request_t *r)
 
     confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
 
-    uc_syn_init(confidx, r);
+    uc_syn_init(post_id,confidx, r);
 
-    if (sigqueue(getppid(), SIG_UPSTREAM_SYN, (const union sigval)(int)confidx) == -1)
+    if (sigqueue(getppid(), SIG_UPSTREAM_SYN, (const union sigval)(int)post_id) == -1)
     {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno, "failed to send sig SIG_UPSTREAM_SYN.");
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
@@ -1006,6 +1029,7 @@ uc_cmp_name_key(char *name, char *key)
 static char *
 uc_parse_conf_name(char *name)
 {
+
     char *p, *conf;
 
     conf = 0;
@@ -1034,7 +1058,8 @@ uc_parse_conf_name(char *name)
 static ngx_int_t
 uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, ngx_pool_t *pool)
 {
-
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
+                      "uc_para_assign");
     if(uc_cmp_name_key(name, "[iphash]") == 0)
     {
         conf->ip_hash = ngx_atoi((u_char *)value, strlen(value));
@@ -1146,13 +1171,17 @@ uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, n
 static ngx_int_t
 uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp)
 {
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
+                      "uc_parse_post_para");
     char *start, *end, *b, *token;
     ngx_chain_t *c;
     uc_node_t *head, *iter;
     ngx_uint_t i, blen;
     uc_sh_conf_t *conf;
 
-    //computer post parameter string's total length
+    //compute post parameter string's total length
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
+                      "compute post parameter string's total length");
     c = postbufs;
     blen = 0;
     while(c != 0)
@@ -1162,7 +1191,9 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
 
     //copy chain's content to single buffer
-    start = (char *)ngx_pcalloc(pool, blen);
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
+                      "copy chain's content to single buffer");
+    start = (char *)ngx_pnalloc(pool, blen);
     if(start == NULL)
     {
         ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
@@ -1181,6 +1212,8 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
 
     //parse buffer to node struct
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
+                      "parse buffer to node struct");
     head = ngx_pcalloc(pool, sizeof(uc_node_t));
     if(head == NULL)
     {
@@ -1233,7 +1266,7 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
             *token = *b;
         }
 
-        if(b == end)
+        if(b >= end)
         {
             token++;
             *token = 0;
@@ -1244,6 +1277,8 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
 
     //parse node struct to uc_sh_conf_t struct
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
+                      "parse node struct to uc_sh_conf_t struct");
     conf = ngx_pcalloc(pool, sizeof(uc_sh_conf_t));
     if(conf == NULL)
     {
@@ -1964,6 +1999,19 @@ uc_module_init(ngx_cycle_t *cycle)
         }
     }
 
+    //init timeout event
+    sucmcf->timeout_ev = ngx_pcalloc(cycle->pool, sizeof(ngx_event_t));
+    if (sucmcf->timeout_ev == NULL)
+        {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                          "failed to init timeout events");
+            return NGX_ERROR;
+
+    }
+    sucmcf->timeout_ev->handler = uc_post_timeout_event_handler;
+    sucmcf->timeout_ev->log = cycle->log;
+    sucmcf->timeout_ev->data = ngx_pcalloc(cycle->pool, sizeof(uc_event_data_t)); //only use post_id member of the struct
+
     uc_srv_conf_t *ucscf, **ucscfp;
     uc_server_t *ucsrv;
     ngx_http_upstream_server_t *ussrv;
@@ -2216,32 +2264,39 @@ uc_channel_handler(ngx_event_t *ev)
             ngx_processes[ch.slot].channel[0] = -1;
             break;
         case CHANNEL_CMD_UPSTREAM_SYN:
-            ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "uc_channel_handler");
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "CHANNEL_CMD_UPSTREAM_SYN handler");
 
-            ngx_uint_t confidx;
+            ngx_int_t post_id;
             uc_srv_conf_t *ucscf;
             uc_event_data_t *ev_data;
+            uc_post_status_t post_status;
 
-            confidx = ch.slot;
-            uc_download_data_from_shzone(confidx);
+            post_id = ch.slot;
+            if(!uc_post_status_is_valid(post_id,&post_status))
+            {
+                ngx_log_debug3(NGX_LOG_DEBUG_CORE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+                break;
+            }
+            uc_download_data_from_shzone(post_status.syn_conf);
 
-            ucscf = uc_get_srv_conf_byidx(confidx);
+            ucscf = uc_get_srv_conf_byidx(post_status.syn_conf);
             ev_data = (uc_event_data_t *)ucscf->apply_ev->data;
             ev_data->ucscf = ucscf;
-            ev_data->confidx = confidx;
+            ev_data->confidx = post_status.syn_conf;
+            ev_data->post_id=post_id;
             ngx_post_event(ucscf->apply_ev, &ngx_posted_events);
 
             ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "post apply conf event");
 
             break;
-        case CHANNEL_CMD_UPSTREAM_UNLOCK:
+        case CHANNEL_CMD_UPSTREAM_FINALIZE_REQ:
         {
-            ngx_event_t *unlock_ev;
-            unlock_ev = uc_get_post_unlock_ev();
-            if(unlock_ev->timer_set)
-            {
-                ngx_post_event(unlock_ev, &ngx_posted_events);
-            }
+
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "CHANNEL_CMD_UPSTREAM_FINALIZE_REQ handler");
+
+            uc_post_status_t post_status;
+            uc_get_post_status(&post_status);
+            uc_finalize_post_request(post_status.r,post_status.status_code);
         }
 
         break;
@@ -2256,7 +2311,17 @@ static void
 uc_apply_conf_post_handler(ngx_event_t *ev)
 {
     uc_event_data_t *ev_data;
+    ngx_int_t post_id;
+    uc_post_status_t post_status;
+
     ev_data = (uc_event_data_t *)ev->data;
+    post_id=ev_data->post_id;
+
+    if(!uc_post_status_is_valid(post_id,&post_status))
+    {
+        ngx_log_debug3(NGX_LOG_DEBUG_CORE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+        return;
+    }
 
     if(uc_apply_lock_trylock(&ev_data->ucscf->apply_lock, &ev_data->ucscf->apply_lock_tries))
     {
@@ -2264,7 +2329,7 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
         uc_apply_new_conf(ev_data->confidx, ev->log);
         uc_apply_lock_unlock(&ev_data->ucscf->apply_lock, &ev_data->ucscf->apply_lock_tries);
 
-        if (sigqueue(getppid(), SIG_UPSTREAM_SYN_ACK, (const union sigval)(int)ev_data->confidx) == -1)
+        if (sigqueue(getppid(), SIG_UPSTREAM_SYN_ACK, (const union sigval)(int)post_id) == -1)
         {
             ngx_log_error(NGX_LOG_ALERT, ev->log, ngx_errno, "failed to send sig SIG_UPSTREAM_SYN_ACK.");
         }
@@ -2278,42 +2343,53 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
 
 }
 
-static void
-uc_post_unlock_event_handler(ngx_event_t *ev)
+
+static void 
+uc_finalize_post_request(ngx_http_request_t *r,ngx_int_t rc)
 {
-    ngx_http_request_t *r;
-    ngx_uint_t flag;
+    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, r->connection->log, 0, "uc_finalize_post_request");
 
-    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "uc_post_unlock_event_handler");
-
-    uc_rcount_clear_zero(uc_get_syn_conf());
-    uc_set_last_update();
-
-    if (ev->timer_set)
-    {
-        //post unlock first come in
-        ngx_del_timer(ev);
-        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "unlock post");
-        flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_OK);
+    ngx_uint_t flag;  
+    
+    //del timeout timer
+    if(sucmcf->timeout_ev->timer_set){
+        ngx_del_timer(sucmcf->timeout_ev);
     }
-    else
-    {
-        //timeout
-        if(ev->posted == 1)
-        {
-            ngx_delete_posted_event(ev);
-        }
-        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "post response timeout");
-        flag = uc_get_ui_status_flag(uc_get_syn_conf(), UI_STATUS_POST_TIMEOUT);
-    }
-    r = (ngx_http_request_t *)ev->data;
-    if(!r->header_sent){
-        uc_output_ui(r, uc_get_update_days(), 0, flag);
-        r->blocked--;
-        ngx_http_finalize_request(r, NGX_DONE);
-    }
+    if(rc==UI_STATUS_POST_OK)
+{
+     uc_rcount_clear_zero(uc_get_syn_conf());
+     uc_set_last_update();
 
+
+}
+    flag = uc_get_ui_status_flag(uc_get_syn_conf(), rc);
+    uc_output_ui(r, uc_get_update_days(), 0, flag);
+    r->blocked--;
+    ngx_http_finalize_request(r, NGX_DONE);
+    
     uc_unlock(uc_get_post_lock());
+}
+
+static void
+uc_post_timeout_event_handler(ngx_event_t *ev)
+{
+  
+    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "uc_post_timeout_event_handler");
+    
+    ngx_int_t post_id;
+    uc_event_data_t *ev_data;
+    uc_post_status_t post_status;
+
+    ev_data=(uc_event_data_t*)ev->data;    
+    post_id=ev_data->post_id;
+
+    if(!uc_post_status_is_valid(post_id,&post_status)){
+         ngx_log_debug3(NGX_LOG_DEBUG_EVENT, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+         return;
+    }
+
+    uc_set_post_status_code(UI_STATUS_POST_TIMEOUT);
+    uc_finalize_post_request(post_status.r,UI_STATUS_POST_TIMEOUT);
 }
 
 /*
@@ -2328,14 +2404,20 @@ uc_sigchld_handler(int signo)
     for (i = 0; i < ngx_last_process; i++)
     {
         if ((ngx_processes[i].exited == 1)                  //process exited
-                && (WIFSIGNALED(ngx_processes[i].status))        //process fail exited
-                //&&(ngx_processes[i].pid == uc_get_post_process())  //because any a worker process core dump the post will fail
+                && (WIFSIGNALED(ngx_processes[i].status))   //process fail exited
            )
         {
-            ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno,
-                          "process %d core dumped, unlock post", ngx_processes[i].pid);
-            //unlock post
-            uc_unlock(uc_get_post_lock());
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,"uc_sigchld_handler");
+
+            uc_post_status_t post_status;
+
+            uc_get_post_status(&post_status);
+            uc_set_post_status_code(UI_STATUS_POST_SRV_ERR);
+            if(post_status.post_pid!=ngx_processes[i].pid){
+                uc_send_finalize_req_channel_cmd(0);
+            }else{
+               uc_unlock(uc_get_post_lock());
+            }
             break;
         }
     }
@@ -2352,16 +2434,22 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
     ngx_int_t      i, n;
     ngx_channel_t  ch;
     uc_syn_key_t   *syn_key;
-    ngx_uint_t confidx;
+    ngx_int_t post_id;
+    uc_post_status_t post_status;
 
-    confidx = (ngx_uint_t)sig_info->si_value.sival_int;
     ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ngx_cycle->log, 0,
                    "uc_sig_syn_handler");
+    post_id = (ngx_int_t)sig_info->si_value.sival_int;
+    
+    if(!uc_post_status_is_valid(post_id,&post_status)){
+        ngx_log_debug3(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,"post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+        return;
+    }
 
     ngx_memzero(&ch, sizeof(ngx_channel_t));
     ch.command = CHANNEL_CMD_UPSTREAM_SYN;
     ch.fd = -1;
-    ch.slot = confidx;
+    ch.slot = post_id;
 
     ngx_queue_init(&sucmcf->syn_queue);
     syn_key = sucmcf->syn_key->elts;
@@ -2388,8 +2476,8 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
         if (ngx_write_channel(ngx_processes[i].channel[0], &ch, sizeof(ngx_channel_t), ngx_cycle->log)
                 != NGX_OK)
         {
-            ngx_log_debug8(NGX_LOG_DEBUG_EVENT, ngx_cycle->log, 0,
-                           "Failed to write channel for update upstream. child: %d %P e:%d t:%d d:%d r:%d j:%d   err:%s",
+            ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                           "Failed to write channel for send CHANNEL_CMD_UPSTREAM_SYN. child: %d %P e:%d t:%d d:%d r:%d j:%d   err:%s",
                            i,
                            ngx_processes[i].pid,
                            ngx_processes[i].exiting,
@@ -2398,7 +2486,10 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
                            ngx_processes[i].respawn,
                            ngx_processes[i].just_spawn,
                            strerror(errno));
-            continue;
+            uc_set_post_status_code(UI_STATUS_POST_SRV_ERR);
+            //send finalize post request channel cmd
+            uc_send_finalize_req_channel_cmd(post_id);
+            return;
         }
 
         syn_key[n].pid = ngx_processes[i].pid;
@@ -2411,7 +2502,7 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
  * function:send CHANNEL_CMD_UPSTREAM_UNLOCK back to the launched worker process when synchronous finished
  */
 static void
-uc_send_unlock_channel_cmd(ngx_uint_t confidx)
+uc_send_finalize_req_channel_cmd(ngx_int_t post_id)
 {
     ngx_channel_t  ch;
     ngx_pid_t pid;
@@ -2419,9 +2510,9 @@ uc_send_unlock_channel_cmd(ngx_uint_t confidx)
     ngx_int_t process_is_dead;
 
     ngx_memzero(&ch, sizeof(ngx_channel_t));
-    ch.command = CHANNEL_CMD_UPSTREAM_UNLOCK;
+    ch.command = CHANNEL_CMD_UPSTREAM_FINALIZE_REQ;
     ch.fd = -1;
-    ch.slot = confidx;
+    ch.slot = post_id;
     pid = uc_get_post_process();
     process_is_dead = 1;
 
@@ -2434,7 +2525,7 @@ uc_send_unlock_channel_cmd(ngx_uint_t confidx)
                     != NGX_OK)
             {
                 ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, ngx_errno, "failed to send CHANNEL_CMD_UPSTREAM_UNLOCK");
-
+                uc_set_post_status_code(UI_STATUS_POST_SRV_ERR);
                 uc_unlock(uc_get_post_lock());
             }
 
@@ -2442,6 +2533,7 @@ uc_send_unlock_channel_cmd(ngx_uint_t confidx)
     }
     if (process_is_dead)
     {
+        uc_set_post_status_code(UI_STATUS_POST_SRV_ERR);
         uc_unlock(uc_get_post_lock());
     }
 }
@@ -2455,14 +2547,20 @@ uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
     ngx_pid_t pid;
     ngx_queue_t *q;
     uc_syn_key_t *syn_key;
-    ngx_uint_t confidx;
-    ngx_int_t i;
+    ngx_int_t i,post_id;
+    uc_post_status_t post_status;
 
-    pid = sig_info->si_pid;
-    confidx = (ngx_uint_t)sig_info->si_value.sival_int;
 
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
                    "uc_sig_syn_ack_handler");
+
+    pid = sig_info->si_pid;
+    post_id = (ngx_int_t)sig_info->si_value.sival_int;
+
+    if(!uc_post_status_is_valid(post_id,&post_status)){
+        ngx_log_debug3(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,"post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+        return;
+    }
 
 
     for (q = ngx_queue_head(&sucmcf->syn_queue);
@@ -2480,7 +2578,7 @@ uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
 
     if(ngx_queue_empty(&sucmcf->syn_queue))
     {
-        uc_send_unlock_channel_cmd(confidx);
+        uc_send_finalize_req_channel_cmd(post_id);
 
     }
     else
@@ -2503,7 +2601,7 @@ uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
             }
         }
 
-        uc_send_unlock_channel_cmd(confidx);
+        uc_send_finalize_req_channel_cmd(post_id);
 
     }
 }
@@ -2679,17 +2777,6 @@ uc_init_shzone(ngx_shm_zone_t *shm_zone, void *data)
     ucsh->number = ucmcf->upstreams.nelts;
     ucsh->last_update = ngx_current_msec;
 
-    //init post unlock event
-    ucsh->post_unlock_ev = ngx_slab_calloc(shpool, sizeof(ngx_event_t));
-    if (ucsh->post_unlock_ev == NULL)
-    {
-        ngx_log_error(NGX_LOG_EMERG, shm_zone->shm.log, ngx_errno,
-                      "failed to init post unlock event");
-        return NGX_ERROR;
-    }
-    ucsh->post_unlock_ev->handler = uc_post_unlock_event_handler;
-    ucsh->post_unlock_ev->log = shm_zone->shm.log;
-
     //alloc init conf space
     ucsh->conf = ngx_slab_calloc(shpool, sizeof(uc_sh_conf_t) * ucmcf->upstreams.nelts);
     ucscfp = (uc_srv_conf_t **)ucmcf->upstreams.elts;
@@ -2725,10 +2812,15 @@ uc_get_post_process()
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
+    ngx_pid_t                      post_pid;
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
-    return ucsh->post_process;
+    
+    ngx_rwlock_rlock(&ucsh->status_lock);
+    post_pid=ucsh->post_status.post_pid;
+    ngx_rwlock_unlock(&ucsh->status_lock);
+    return post_pid;
 }
 
 
@@ -2737,39 +2829,97 @@ uc_get_syn_conf()
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
+    ngx_uint_t                     confidx;
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
-    return ucsh->syn_conf;
+    ngx_rwlock_rlock(&ucsh->status_lock);
+    confidx = ucsh->post_status.syn_conf;
+    ngx_rwlock_unlock(&ucsh->status_lock);
+    return confidx;
 }
 
-static ngx_event_t *
-uc_get_post_unlock_ev()
+static ngx_int_t 
+uc_new_post_id(ngx_int_t code)
+{
+    ngx_slab_pool_t                *shpool;
+    uc_sh_t                        *ucsh;
+    ngx_uint_t                     post_id;
+
+    shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
+    ucsh = (uc_sh_t *)shpool->data;
+    ngx_rwlock_wlock(&ucsh->status_lock);
+    ucsh->post_status.post_id++;
+    post_id=ucsh->post_status.post_id;
+    ngx_rwlock_unlock(&ucsh->status_lock);
+    return post_id;
+}
+
+static void
+uc_get_post_status(uc_post_status_t *post_status)
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
+    ngx_rwlock_rlock(&ucsh->status_lock);
+    post_status->post_id=ucsh->post_status.post_id;
+    post_status->status_code=ucsh->post_status.status_code;
+    post_status->r=ucsh->post_status.r;
+    post_status->syn_conf=ucsh->post_status.syn_conf;
+    post_status->post_pid=ucsh->post_status.post_pid;
 
-    return ucsh->post_unlock_ev;
+    ngx_rwlock_unlock(&ucsh->status_lock);
 }
+
+static ngx_int_t
+uc_post_status_is_valid(ngx_int_t post_id,uc_post_status_t *post_status)
+{
+    uc_get_post_status(post_status);
+    if(post_id!=post_status->post_id){
+       return 0;
+    }
+    if(post_status->status_code != UI_STATUS_POST_OK){
+       return 0;
+    }
+    return 1;
+}
+
 
 /*
  * initialize synchronous data, set synchronous event and block the request
  */
 static void
-uc_syn_init(ngx_uint_t confidx, ngx_http_request_t *r)
+uc_syn_init(ngx_int_t post_id,ngx_uint_t confidx, ngx_http_request_t *r)
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
+    //init post status
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
-    ucsh->post_process = getpid();
-    ucsh->syn_conf = confidx;
-    ucsh->post_unlock_ev->data = r;
-    ngx_add_timer(ucsh->post_unlock_ev, UC_WAIT_OUTTIME);
+    ngx_rwlock_wlock(&ucsh->status_lock);
+    ucsh->post_status.status_code=UI_STATUS_POST_OK;
+    ucsh->post_status.post_pid = getpid();
+    ucsh->post_status.syn_conf = confidx;
+    ucsh->post_status.post_id=post_id;
+    ucsh->post_status.r=r;
+    ngx_rwlock_unlock(&ucsh->status_lock);
+
+    //clear old timeout timer
+    if(sucmcf->timeout_ev->timer_set)
+    {
+        ngx_del_timer(sucmcf->timeout_ev);
+    }
+    
+    //set new timer
+    uc_event_data_t *ev_data;
+    ev_data=(uc_event_data_t*)sucmcf->timeout_ev->data;
+    ev_data->post_id = post_id;
+    ngx_add_timer(sucmcf->timeout_ev, UC_WAIT_OUTTIME);
+
+    //block request
     r->blocked++;
 
 }
@@ -2820,6 +2970,21 @@ uc_get_update_days()
 
     days = (now - last_update) / (1000 * 3600 * 24);
     return days;
+}
+
+static void
+uc_set_post_status_code(ngx_int_t code)
+{
+    ngx_slab_pool_t                *shpool;
+    uc_sh_t                        *ucsh;
+
+    shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
+    ucsh = (uc_sh_t *)shpool->data;
+
+    ngx_rwlock_wlock(&ucsh->status_lock);
+    ucsh->post_status.status_code = code;
+    ngx_rwlock_unlock(&ucsh->status_lock);
+
 }
 
 static ngx_int_t
