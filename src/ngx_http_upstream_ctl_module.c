@@ -1180,8 +1180,7 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     uc_sh_conf_t *conf;
 
     //compute post parameter string's total length
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
-                      "compute post parameter string's total length");
+
     c = postbufs;
     blen = 0;
     while(c != 0)
@@ -1191,8 +1190,7 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
 
     //copy chain's content to single buffer
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
-                      "copy chain's content to single buffer");
+
     start = (char *)ngx_pnalloc(pool, blen);
     if(start == NULL)
     {
@@ -1212,8 +1210,7 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
 
     //parse buffer to node struct
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
-                      "parse buffer to node struct");
+
     head = ngx_pcalloc(pool, sizeof(uc_node_t));
     if(head == NULL)
     {
@@ -1277,8 +1274,7 @@ uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp
     }
 
     //parse node struct to uc_sh_conf_t struct
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
-                      "parse node struct to uc_sh_conf_t struct");
+
     conf = ngx_pcalloc(pool, sizeof(uc_sh_conf_t));
     if(conf == NULL)
     {
@@ -2274,7 +2270,7 @@ uc_channel_handler(ngx_event_t *ev)
             post_id = ch.slot;
             if(!uc_post_status_is_valid(post_id,&post_status))
             {
-                ngx_log_debug3(NGX_LOG_DEBUG_CORE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+                ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
                 break;
             }
             uc_download_data_from_shzone(post_status.syn_conf);
@@ -2319,7 +2315,7 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
 
     if(!uc_post_status_is_valid(post_id,&post_status))
     {
-        ngx_log_debug3(NGX_LOG_DEBUG_CORE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+        ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
         return;
     }
 
@@ -2384,7 +2380,7 @@ uc_post_timeout_event_handler(ngx_event_t *ev)
     post_id=ev_data->post_id;
 
     if(!uc_post_status_is_valid(post_id,&post_status)){
-         ngx_log_debug3(NGX_LOG_DEBUG_EVENT, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+         ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
          return;
     }
 
@@ -2442,7 +2438,7 @@ uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused)
     post_id = (ngx_int_t)sig_info->si_value.sival_int;
     
     if(!uc_post_status_is_valid(post_id,&post_status)){
-        ngx_log_debug3(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,"post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,"post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
         return;
     }
 
@@ -2558,7 +2554,7 @@ uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused)
     post_id = (ngx_int_t)sig_info->si_value.sival_int;
 
     if(!uc_post_status_is_valid(post_id,&post_status)){
-        ngx_log_debug3(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,"post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,"post has aborted. postid1:%d postid2:%d code:%d",post_id,post_status.post_id,post_status.status_code);
         return;
     }
 
