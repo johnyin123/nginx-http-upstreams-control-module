@@ -1,5 +1,9 @@
 #nginx http upstreams control module  
-The guide of ngx_http_upstream_ctl_module module installation
+
+This is a nginx module for monitoring and control upstream.
+You can view http upstream configuration and statistical upstream service request count of nginx.You also can modify upstream configuration online by browser without editting nginx configuration file and stopping nginx service. 
+  
+ 
 
 #Install
 1. Compile nginx (version:nginx-1.9.8) with this ./configure option:     
