@@ -1,6 +1,6 @@
 #nginx http upstreams control module  
 
-This is a nginx module for monitoring and control upstream.
+This is a nginx module for monitoring and control upstream.  
 You can view http upstream configuration and statistical upstream service request count of nginx.You also can modify upstream configuration online by browser without editting nginx configuration file and stopping nginx service. 
   
  
@@ -26,7 +26,7 @@ You can view http upstream configuration and statistical upstream service reques
     }
 
 #Use
-   Enter http://host/upstreams
+   Access http://host/upstreams by browser
 
 --- 
 #Author
