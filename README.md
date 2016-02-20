@@ -30,7 +30,7 @@ You can view http upstream configuration and statistical upstream service reques
 
 --- 
 #Author
-* by dss_liuhl 
+* dss_liuhl 
 * QQ:1610153337 
 * email:15817409379@163.com
 
