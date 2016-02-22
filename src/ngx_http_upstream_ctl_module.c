@@ -663,7 +663,7 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
             strcat(testui, (const char *)"<div class='alert alert-success' role='alert'>Update upstreams OK!</div>");
             break;
         case UI_STATUS_POST_TIMEOUT:
-            strcat(testui, (const char *)"<div class='alert alert-warning' role='alert'>Update upstreams timout.</div>");
+            strcat(testui, (const char *)"<div class='alert alert-warning' role='alert'>Update upstreams timeout.</div>");
             break;
         case UI_STATUS_POST_SRV_ERR:
             strcat(testui, (const char *)"<div class='alert alert-danger' role='alert'>An error occurs when update upstreams.</div>");
@@ -2359,7 +2359,7 @@ uc_finalize_post_request(ngx_http_request_t *r, ngx_int_t rc)
     }
     if(rc == UI_STATUS_POST_OK)
     {
-        uc_rcount_clear_zero(uc_get_syn_conf());
+        //uc_rcount_clear_zero(uc_get_syn_conf());
         uc_set_last_update();
 
     }
