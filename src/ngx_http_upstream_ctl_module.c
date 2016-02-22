@@ -628,7 +628,7 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
                 &uscf->host);
     strcat(testui, (const char *)tmpbuf);
 
-    for (m = 0; m < 10; m++)
+    for (m = 0; m < 33; m++)
     {
         if (ucscf->keepalive == m)
         {
