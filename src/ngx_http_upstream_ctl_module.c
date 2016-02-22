@@ -297,7 +297,6 @@ static ngx_uint_t uc_get_syn_conf();
 //request count functions
 static void uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sig_rcount_rpt_handler(ngx_http_request_t *r, ngx_int_t rc);
-static void uc_rcount_clear_zero(ngx_uint_t confidx);
 static ngx_uint_t uc_get_rcount(ngx_uint_t group, ngx_uint_t server);
 
 //http content handlers
@@ -618,7 +617,7 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
                 "</div>"\
                 "<div class='form-group' style='margin-left:20px;'>"\
                 "<label for='post[%V][keepalive]'>keepalive:</label>"\
-                "<select id='post[%V][keepalive]' name='post[%V][keepalive]'>",
+                "<select id='post[%V][keepalive]' name='post[%V][keepalive]'>",            
                 &uscf->host,
                 &uscf->host,
                 &uscf->host,
@@ -2359,7 +2358,6 @@ uc_finalize_post_request(ngx_http_request_t *r, ngx_int_t rc)
     }
     if(rc == UI_STATUS_POST_OK)
     {
-        //uc_rcount_clear_zero(uc_get_syn_conf());
         uc_set_last_update();
 
     }
@@ -2712,29 +2710,6 @@ uc_get_rcount(ngx_uint_t group, ngx_uint_t server)
     rcount = ucsh->conf[group].server[server].rcount;
     ngx_rwlock_unlock(&ucsh->conf[group].server[server].rcount_lock);
     return rcount;
-}
-
-static void
-uc_rcount_clear_zero(ngx_uint_t confidx)
-{
-
-    ngx_slab_pool_t                *shpool;
-    uc_sh_t                        *ucsh;
-    uc_srv_conf_t *ucscf, **ucscfp;
-    ngx_uint_t i;
-
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0, "uc_rcount_clear_zero");
-
-    shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
-    ucsh = (uc_sh_t *)shpool->data;
-    ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
-    ucscf = (uc_srv_conf_t *)ucscfp[confidx];
-    for (i = 0; i < ucscf->upstream->servers->nelts; i++)
-    {
-        ngx_rwlock_wlock(&ucsh->conf[confidx].server[i].rcount_lock);
-        ucsh->conf[confidx].server[i].rcount = 0;
-        ngx_rwlock_unlock(&ucsh->conf[confidx].server[i].rcount_lock);
-    }
 }
 
 static char *
