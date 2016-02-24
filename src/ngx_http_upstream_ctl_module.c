@@ -76,7 +76,7 @@ typedef struct   /* copy from ngx_process.c */
     char    *signame;
     char    *name;
     void    (*handler)(int signo);
-    
+
 } ngx_signal_t;
 
 typedef struct  /* copy from ngx_http_upstream_keepalive_module */
@@ -244,7 +244,7 @@ typedef struct uc_node_s
 
 } uc_node_t;
 
-////////////////// function declares /////////////////////////
+////////////////// function declarations /////////////////////////
 
 //command set functions
 static char *uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -304,7 +304,7 @@ static void uc_post_request_handler(ngx_http_request_t *r);
 static ngx_int_t uc_request_handler(ngx_http_request_t *r);
 
 //script output functions
-static ngx_int_t uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag);
+static ngx_int_t uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag, ngx_uint_t refresh);
 static void uc_output_server(char **pui, ngx_http_upstream_srv_conf_t *uscf, ngx_http_upstream_server_t *usrv, ngx_uint_t index, ngx_uint_t groupindex, uc_sh_server_t *last_post);
 static void uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *ucscf, ngx_uint_t groupindex, uc_sh_conf_t *last_post, ngx_uint_t flag);
 static void uc_output_editdlg(char **pui);
@@ -609,7 +609,7 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
         ngx_str_set(&iphash_checked, "");
     }
     ngx_sprintf(tmpbuf,
-                "<form class='form-inline' method='post' name='post[%V]' action='/upstreams'>"\
+                "<form class='form-inline' method='post' name='post[%V]' action='/upstreams_post'>"\
                 "<fieldset>"\
                 "<legend><h2>%V</h2></legend>"\
                 "<div class='checkbox-inline'>"\
@@ -617,7 +617,7 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
                 "</div>"\
                 "<div class='form-group' style='margin-left:20px;'>"\
                 "<label for='post[%V][keepalive]'>keepalive:</label>"\
-                "<select id='post[%V][keepalive]' name='post[%V][keepalive]'>",            
+                "<select id='post[%V][keepalive]' name='post[%V][keepalive]'>",
                 &uscf->host,
                 &uscf->host,
                 &uscf->host,
@@ -702,7 +702,7 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
  * function:output response content of html script
  */
 static ngx_int_t
-uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag)
+uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag, ngx_uint_t refresh)
 {
     ngx_chain_t                     out;
     ngx_buf_t                       *b;
@@ -726,8 +726,13 @@ uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx
            "<meta charset='utf-8'>"\
            "<meta http-equiv='X-UA-Compatible' content='IE=edge'>"\
            "<meta name='viewport' content='width=device-width, initial-scale=1'>"\
-           "<meta http-equiv='content-type' content='text/html; charset=UTF-8'>"\
-           "<meta name='keywords' content='Nginx, Upstreams, Control, Nginx module' />"\
+           "<meta http-equiv='content-type' content='text/html; charset=UTF-8'>"
+          );
+    if(refresh == 1)
+    {
+        strcat(testui, (const char *)"<meta http-equiv='refresh' content='5; URL=/upstreams'>");
+    }
+    strcat(testui, (const char *)"<meta name='keywords' content='Nginx, Upstreams, Control, Nginx module' />"\
            "<meta name='description' content='Nginx Upstreams Control' />"\
            "<meta name='author' content='dss_liuhl(QQ:1610153337 email:15817409379@163.com)' />"\
            "<title>Nginx Upstreams</title>"\
@@ -889,7 +894,7 @@ uc_post_request_handler(ngx_http_request_t *r)
         {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "page dismatch error.please refresh and try again");
-            uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0);
+            uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0, 1);
         }
         else
         {
@@ -897,18 +902,18 @@ uc_post_request_handler(ngx_http_request_t *r)
             {
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                               "failed to parse post para.");
-                uc_output_ui(r, uc_get_update_days(), 0, 0);
+                uc_output_ui(r, uc_get_update_days(), 0, 0, 1);
             }
             else
             {
                 confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
                 if(rc == 1)
                 {
-                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO));
+                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO), 1);
                 }
                 else
                 {
-                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_BUSY));
+                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_BUSY), 1);
                 }
             }
         }
@@ -938,7 +943,7 @@ uc_post_request_handler(ngx_http_request_t *r)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "page dismatch error.please refresh and try again");
-        uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0);
+        uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0, 1);
         ngx_http_finalize_request(r, NGX_OK);
         uc_unlock(uc_get_post_lock());
         return;
@@ -961,7 +966,7 @@ uc_post_request_handler(ngx_http_request_t *r)
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                               "no server in the upstream");
                 confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
-                uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO));
+                uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO), 1);
                 ngx_http_finalize_request(r, NGX_OK);
                 uc_unlock(uc_get_post_lock());
                 return;
@@ -1360,7 +1365,7 @@ uc_request_handler(ngx_http_request_t *r)
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                        "uc_request_handler this is a get request.");
 
-        return uc_output_ui(r, uc_get_update_days(), 0, UI_STATUS_GET);
+        return uc_output_ui(r, uc_get_update_days(), 0, UI_STATUS_GET, 0);
 
     }
 }
@@ -2362,10 +2367,10 @@ uc_finalize_post_request(ngx_http_request_t *r, ngx_int_t rc)
 
     }
     flag = uc_get_ui_status_flag(uc_get_syn_conf(), rc);
-    uc_output_ui(r, uc_get_update_days(), 0, flag);
+
+    uc_output_ui(r, uc_get_update_days(), 0, flag, 1);
     r->blocked--;
     ngx_http_finalize_request(r, NGX_DONE);
-
     uc_unlock(uc_get_post_lock());
 }
 
