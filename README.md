@@ -1,3 +1,15 @@
+#这是一个新分支
+##使用新的用例场景开发
+1. 点击ip_hash 和 keepalive 旁的update按钮更新对应后端的的upstream转发方式，即时生效
+2. 点击server行的edit按钮更新server的运行参数，即时生效
+3. 点击server行的enable/disable按钮更新启动或停止对应服务，即时生效
+
+##更进一步
+* 将ui界面元素配置化，可以自定义
+  
+  
+---
+  
 #基于web的 nginx upstream 监控和管理模块
 #nginx http upstreams control module  
 本模块是为监视和控制nginx的upstream配置而写的nginx模块。  
