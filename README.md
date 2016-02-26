@@ -8,8 +8,8 @@
 * 将ui界面元素配置化，使用户可自定义界面
   
   
----
-*** 
+---  
+
   
 #基于web的 nginx upstream 监控和管理模块
 #nginx http upstreams control module  
