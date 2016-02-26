@@ -5,10 +5,11 @@
 3. 点击server行的enable/disable按钮更新启动或停止对应服务，即时生效
 
 ##更进一步
-* 将ui界面元素配置化，可以自定义
+* 将ui界面元素配置化，使用户可自定义界面
   
   
 ---
+*** 
   
 #基于web的 nginx upstream 监控和管理模块
 #nginx http upstreams control module  
