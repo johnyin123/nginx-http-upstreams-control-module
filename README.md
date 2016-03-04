@@ -25,9 +25,9 @@ You can view http upstream configuration and statistical upstream service reques
 1. 用下面的./configure配置项编译nginx（版本：nginx-1.9.8）：  
 1. Compile nginx (version:nginx-1.9.8) with this ./configure option:     
 
-       --add-module=path/to/src/directory 
-       --with-cc-opt="-I /usr/include/lua5.3" 
-       --with-ld-opt="-l lua5.3 -L /usr/lib/i386-linux-gnu"  
+       --add-module=path/to/src/directory   
+       --with-cc-opt="-I /usr/include/lua5.3"   
+       --with-ld-opt="-l lua5.3 -L /usr/lib/i386-linux-gnu"    
 
 2. 将html目录下的所有东西拷贝到nginx的html目录。  
 2. Copy the "html" directory's all things to nginx "html" directory.
@@ -65,8 +65,8 @@ You can view http upstream configuration and statistical upstream service reques
    * UI回调接口    
    (lua) write_html(data)  
 
-   * Keepalive，Ip hash更新接口  
-   (AJAX) POST /upstreams_update
+   * Keepalive，Ip hash更新接口(waiting...)  
+   (AJAX) POST /upstreams_update  
      post parameter:  
      {
        method:'update',
@@ -82,8 +82,8 @@ You can view http upstream configuration and statistical upstream service reques
      }
     
 
-   * upstream 服务器参数编辑接口    
-   (AJAX) POST /upstreams_edit
+   * upstream 服务器参数编辑接口(waiting...)    
+   (AJAX) POST /upstreams_edit  
      post parameter:    
      {
         method:'edit',
@@ -101,8 +101,8 @@ You can view http upstream configuration and statistical upstream service reques
         message:?
      }
   
-   * upstream 服务器启停接口  
-   (AJAX) POST /upstreams_enable 
+   * upstream 服务器启停接口(waiting...)   
+   (AJAX) POST /upstreams_enable   
      post parameter:   
      {
         method:'enable',
