@@ -58,7 +58,7 @@ You can view http upstream configuration and statistical upstream service reques
 
 
 #自定制UI
-#Customize yourself UI  
+#Customize UI by yourself  
    * 配置查询接口    
    (HTTP) GET /upstreams
 
@@ -92,9 +92,8 @@ You can view http upstream configuration and statistical upstream service reques
         weight:?,
         backup:?
         max_fails:?,
-        fail_timeout:? ,
-
-     }
+        fail_timeout:?
+     }  
      response:
      {
         code:?
