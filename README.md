@@ -74,7 +74,6 @@ You can view http upstream configuration and statistical upstream service reques
        ip_hash:?,
        keepalive:?
      }  
-
      response:
      {
         code:?
