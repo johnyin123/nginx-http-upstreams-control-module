@@ -8,6 +8,9 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include <ngx_channel.h>
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 
 /////////////// macro defines ////////////////////////////////
 
@@ -34,8 +37,7 @@
 #define UC_MAX_GROUP_NUMBER               1000
 //request count
 #define UC_RCOUNT_KEY_ARRAY_INIT_SIZE     5
-//synchronous wait outtime
-#define UC_WAIT_OUTTIME                   3000
+
 //apply configuration time span
 #define UC_APPCONF_TIMESPAN               50
 
@@ -114,6 +116,8 @@ typedef struct
 typedef struct
 {
     ngx_flag_t         upstreams_admin;
+    ngx_str_t          ui_lua_file;     /* ui script file path */
+    ngx_str_t          ui_lua_code;     /* ui script code */
 
     ngx_array_t        upstreams;/* array member type is uc_srv_conf_t * */
 
@@ -130,8 +134,9 @@ typedef struct
     ngx_array_t        *syn_key;  /* array member type is uc_syn_key_t */
     ngx_queue_t        syn_queue;
 
+    ngx_uint_t         timeout;   /* post timeout value */
     ngx_event_t        *timeout_ev;
-
+    
     ngx_array_t        *rcount_key; /* array member type is uc_rcount_key_t */
     ngx_queue_t        rcount_use_queue;
     ngx_queue_t        rcount_free_queue;
@@ -248,6 +253,8 @@ typedef struct uc_node_s
 
 //command set functions
 static char *uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *uc_cmd_set_ui_lua_file_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *uc_cmd_set_timeout_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 //nginx custome functions
 static ngx_int_t uc_module_preconf(ngx_conf_t *cf);
@@ -304,10 +311,8 @@ static void uc_post_request_handler(ngx_http_request_t *r);
 static ngx_int_t uc_request_handler(ngx_http_request_t *r);
 
 //script output functions
+static void uc_lua_create_ui_data(lua_State *L);
 static ngx_int_t uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag, ngx_uint_t refresh);
-static void uc_output_server(char **pui, ngx_http_upstream_srv_conf_t *uscf, ngx_http_upstream_server_t *usrv, ngx_uint_t index, ngx_uint_t groupindex, uc_sh_server_t *last_post);
-static void uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *ucscf, ngx_uint_t groupindex, uc_sh_conf_t *last_post, ngx_uint_t flag);
-static void uc_output_editdlg(char **pui);
 static ngx_uint_t uc_get_ui_status_flag(ngx_uint_t confidx, ngx_uint_t flag);
 
 //script parse functions
@@ -339,9 +344,9 @@ extern ngx_uint_t    ngx_process;
 extern ngx_queue_t   ngx_posted_events;
 extern ngx_signal_t  signals[];
 
-static ngx_str_t uc_backup[] = {ngx_string("No"), ngx_string("Yes")};
-static ngx_str_t uc_down[] = {ngx_string("Normal"), ngx_string("Down")};
-static ngx_str_t uc_enable[] = {ngx_string("disable"), ngx_string("enable")};
+//static ngx_str_t uc_backup[] = {ngx_string("No"), ngx_string("Yes")};
+//static ngx_str_t uc_down[] = {ngx_string("Normal"), ngx_string("Down")};
+//static ngx_str_t uc_enable[] = {ngx_string("disable"), ngx_string("enable")};
 static uc_main_conf_t *sucmcf = 0;
 
 static ngx_command_t  ngx_http_upstream_ctl_commands[] =
@@ -350,6 +355,23 @@ static ngx_command_t  ngx_http_upstream_ctl_commands[] =
         ngx_string("upstreams_admin"),
         NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
         uc_cmd_set_upstreams_admin_handler,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        0,
+        NULL
+    },
+    {
+        ngx_string("ui_lua_file"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        uc_cmd_set_ui_lua_file_handler,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        0,
+        NULL
+    },
+
+    {
+        ngx_string("timeout"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        uc_cmd_set_timeout_handler,
         NGX_HTTP_MAIN_CONF_OFFSET,
         0,
         NULL
@@ -486,217 +508,103 @@ uc_apply_lock_unlock(ngx_atomic_t *lock, ngx_uint_t *tries)
     }
 }
 
-/*
- * function: output a upstream server row in html script
- * note: display color is green when post is equal to real value or that is red
- */
-static void
-uc_output_server(char **pui, ngx_http_upstream_srv_conf_t *uscf, ngx_http_upstream_server_t *usrv, ngx_uint_t index, ngx_uint_t groupindex, uc_sh_server_t *last_post)
+static void 
+uc_lua_create_ui_data(lua_State *L)
 {
-    char *testui;
-    char tmpbuf[TEMPLATE_BUFFER_SIZE];
-
-    memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
-    testui = *pui;
-
-    ngx_sprintf((u_char *)tmpbuf,
-                "<tr>"\
-                "<td class='editable'>"\
-                "<span>%V</span>"\
-                "<input type='hidden' value='%V' name='post[%V][server][%ui][name]' id= 'post[%V][server][%ui][name]'/>"\
-                "</td>"\
-                "<td align='center' class='editable'>"\
-                "<span run='%ui' style='color:%s'>%ui</span>"\
-                "<input type='hidden' value='%ui' name='post[%V][server][%ui][weight]' id= 'post[%V][server][%ui][weight]'/>"\
-                "</td>"\
-                "<td align='center' class='editable'>"\
-                "<span run='%V' style='color:%s'>%V</span>"\
-                "<input type='hidden' value='%V' name='post[%V][server][%ui][backup]' id= 'post[%V][server][%ui][backup]'/>"\
-                "</td>"\
-                "<td align='center' class='editable'>"\
-                "<span run='%ui' style='color:%s'>%ui</span>"\
-                "<input type='hidden' value='%ui' name='post[%V][server][%ui][max_fails]' id= 'post[%V][server][%ui][max_fails]'/>"\
-                "</td>"\
-                "<td align='center' class='editable'>"\
-                "<span run='%T' style='color:%s'>%T</span>"\
-                "<input type='hidden' value='%T' name='post[%V][server][%ui][fail_timeout]' id= 'post[%V][server][%ui][fail_timeout]'/>"\
-                "</td>"\
-                "<td align='center' class='editable status'>"\
-                "<span run='%V' style='color:%s'>%V</span>"\
-                "<input type='hidden' value='%V' name='post[%V][server][%ui][status]' id= 'post[%V][server][%ui][status]'/>"\
-                "</td>"\
-                "<td align='right'>"\
-                "%ui"\
-                "</td>"\
-                "<td><a data-toggle='modal' data-target='#editdlg' data-whatever='post[%V][server][%ui]' style='cursor:pointer;'>edit</a> <a style='cursor:pointer;' class='switch-status'>%V</a></td>"\
-                "</tr>",
-                &usrv->name,
-                &usrv->name,
-                &uscf->host,
-                index,
-                &uscf->host,
-                index,
-                usrv->weight,
-                uc_get_display_color(weight),
-                uc_get_display_value(weight),
-                uc_get_display_value(weight),
-                &uscf->host,
-                index,
-                &uscf->host,
-                index,
-                &uc_backup[usrv->backup],
-                uc_get_display_color(backup),
-                uc_get_display_string(backup),
-                uc_get_display_string(backup),
-                &uscf->host,
-                index,
-                &uscf->host,
-                index,
-                usrv->max_fails,
-                uc_get_display_color(max_fails),
-                uc_get_display_value(max_fails),
-                uc_get_display_value(max_fails),
-                &uscf->host,
-                index,
-                &uscf->host,
-                index,
-                usrv->fail_timeout,
-                uc_get_display_color(fail_timeout),
-                uc_get_display_value(fail_timeout),
-                uc_get_display_value(fail_timeout),
-                &uscf->host,
-                index,
-                &uscf->host,
-                index,
-                &uc_down[usrv->down],
-                uc_get_display_color(down),
-                uc_get_display_string(down),
-                uc_get_display_string(down),
-                &uscf->host,
-                index,
-                &uscf->host,
-                index,
-                uc_get_rcount(groupindex, index),
-                &uscf->host,
-                index,
-                &uc_enable[usrv->down]
-               );
-    strcat(testui, (const char *)tmpbuf);
-}
-
-/*
- * function: output a upstream servers group in html script
- */
-static void
-uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *ucscf, ngx_uint_t groupindex, uc_sh_conf_t *last_post, ngx_uint_t flag)
-{
-    char *testui;
-    ngx_uint_t m;
+    ngx_http_upstream_srv_conf_t    *uscf;
     ngx_http_upstream_server_t      *usrv;
-    ngx_str_t iphash_checked, keepalive_checked;
-    u_char tmpbuf[TEMPLATE_BUFFER_SIZE];
-    ngx_uint_t confidx, realflag;
+    uc_main_conf_t                  *ucmcf;
+    uc_srv_conf_t                   *ucscf, **ucscfp;
+    ngx_uint_t                      i,j;
 
-    testui = *pui;
-    memset(tmpbuf, 0, sizeof(tmpbuf));
+    ucmcf = sucmcf;
+    ucscfp = ucmcf->upstreams.elts;
 
-    if (ucscf->ip_hash)
-    {
-        ngx_str_set(&iphash_checked, "checked='checked'");
-    }
-    else
-    {
-        ngx_str_set(&iphash_checked, "");
-    }
-    ngx_sprintf(tmpbuf,
-                "<form class='form-inline' method='post' name='post[%V]' action='/upstreams_post'>"\
-                "<fieldset>"\
-                "<legend><h2>%V</h2></legend>"\
-                "<div class='checkbox-inline'>"\
-                "<label><input type='checkbox' id='post[%V][iphash]' name='post[%V][iphash]' value='1' %V />ip_hash</label>"\
-                "</div>"\
-                "<div class='form-group' style='margin-left:20px;'>"\
-                "<label for='post[%V][keepalive]'>keepalive:</label>"\
-                "<select id='post[%V][keepalive]' name='post[%V][keepalive]'>",
-                &uscf->host,
-                &uscf->host,
-                &uscf->host,
-                &uscf->host,
-                &iphash_checked,
-                &uscf->host,
-                &uscf->host,
-                &uscf->host);
-    strcat(testui, (const char *)tmpbuf);
+    lua_newtable(L);  
 
-    for (m = 0; m < 33; m++)
+    lua_pushstring(L,"uptime");
+    lua_pushnumber(L,5);
+    lua_settable(L,-3);
+
+    lua_pushstring(L,"backend_count");
+    lua_pushnumber(L,ucmcf->upstreams.nelts);
+    lua_settable(L,-3);
+
+    lua_pushstring(L,"backend_set");
+    lua_newtable(L); 
+    for (i = 0; i < ucmcf->upstreams.nelts; i++)
     {
-        if (ucscf->keepalive == m)
-        {
-            ngx_str_set(&keepalive_checked, "selected='selected'");
+        lua_pushnumber(L,i+1);
+        lua_newtable(L);                 //a backend
+        
+        ucscf = ucscfp[i];
+        uscf = ucscf->upstream;
+        usrv = uscf->servers->elts;
+
+        lua_pushstring(L,"backend");
+        lua_pushstring(L,(const char*)uscf->host.data);
+        lua_settable(L,-3);
+
+        lua_pushstring(L,"ip_hash");
+        lua_pushnumber(L,ucscf->ip_hash);
+        lua_settable(L,-3);
+
+        lua_pushstring(L,"keepalive");
+        lua_pushnumber(L,ucscf->keepalive);
+        lua_settable(L,-3);
+
+        lua_pushstring(L,"server_count");
+        lua_pushnumber(L,uscf->servers->nelts);
+        lua_settable(L,-3);
+
+        lua_pushstring(L,"server_set");
+        lua_newtable(L); 
+        for (j = 0; j < uscf->servers->nelts; j++, usrv++)
+        {   
+            lua_pushnumber(L,j+1);
+            lua_newtable(L);                 //a server
+                      
+            lua_pushstring(L,"server");
+            lua_pushstring(L,(const char*)usrv->name.data);
+            lua_settable(L,-3);
+
+            lua_pushstring(L,"weight");
+            lua_pushnumber(L,usrv->weight);
+            lua_settable(L,-3);
+
+            lua_pushstring(L,"backup");
+            lua_pushnumber(L,usrv->backup);
+            lua_settable(L,-3);
+
+            lua_pushstring(L,"max_fails");
+            lua_pushnumber(L,usrv->max_fails);
+            lua_settable(L,-3);
+
+            lua_pushstring(L,"fail_timeout");
+            lua_pushnumber(L,usrv->fail_timeout);
+            lua_settable(L,-3);
+
+            lua_pushstring(L,"down");
+            lua_pushnumber(L,usrv->down);
+            lua_settable(L,-3);
+
+            lua_pushstring(L,"requests");
+            lua_pushnumber(L,uc_get_rcount(i, j));
+            lua_settable(L,-3);
+
+
+            lua_settable(L,-3);                
+    
         }
-        else
-        {
-            ngx_str_set(&keepalive_checked, "");
-        }
-        memset(tmpbuf, 0, sizeof(tmpbuf));
-        ngx_sprintf(tmpbuf, "<option value='%ui' %V>%ui</option>", m, &keepalive_checked, m);
-        strcat(testui, (const char *)tmpbuf);
+        lua_settable(L,-3);
+
+        lua_settable(L,-3);
     }
-    strcat(testui, (const char *)"</select></div>");
 
-    memset(tmpbuf, 0, sizeof(tmpbuf));
-    ngx_sprintf(tmpbuf,
-                "<div class='form-group' style='margin-left:20px;'><label><input name='post[%V][submit]' type='submit' value='update'></input></label></div><br>", &uscf->host);
-    strcat(testui, (const char *)tmpbuf);
+    lua_settable(L,-3);
 
-    confidx = flag % UC_MAX_GROUP_NUMBER;
-    realflag = flag / UC_MAX_GROUP_NUMBER;
-    if(confidx == groupindex)
-    {
-        switch (realflag)
-        {
-        case UI_STATUS_GET:
-            //strcat(testui, (const char *)"");
-            break;
-        case UI_STATUS_POST_OK:
-            strcat(testui, (const char *)"<div class='alert alert-success' role='alert'>Update upstreams OK!</div>");
-            break;
-        case UI_STATUS_POST_TIMEOUT:
-            strcat(testui, (const char *)"<div class='alert alert-warning' role='alert'>Update upstreams timeout.</div>");
-            break;
-        case UI_STATUS_POST_SRV_ERR:
-            strcat(testui, (const char *)"<div class='alert alert-danger' role='alert'>An error occurs when update upstreams.</div>");
-            break;
-        case UI_STATUS_POST_SRV_BUSY:
-            strcat(testui, (const char *)"<div class='alert alert-info' role='alert'>Server is busy, please wait for a moment and try again.</div>");
-            break;
-        case UI_STATUS_POST_SRV_ZERO:
-            strcat(testui, (const char *)"<div class='alert alert-danger' role='alert'>No servers in this upstream (All is backup).</div>");
-            break;
-        default:
-            strcat(testui, (const char *)"<div class='alert alert-danger' role='alert'>An unknown error occurs in server.</div>");
-
-        }
-    }
-    strcat(testui, (const char *)"<table  style='margin-top:10px;' class='table table-striped table-bordered'>"\
-           "<tr>"\
-           "<th>Server</th>"\
-           "<th align='center' style='text-align:center'>Weight</th>"\
-           "<th align='center' style='text-align:center'>Backup</th>"\
-           "<th align='center' style='text-align:center'>max_fails</th>"\
-           "<th align='center' style='text-align:center'>fail_timeout</th>"\
-           "<th align='center' style='text-align:center'>Status</th>"\
-           "<th align='right' style='text-align:right'>Requests</th>"\
-           "<th>Operations</th>"\
-           "</tr>");
-
-    usrv = uscf->servers->elts;
-    for (m = 0; m < uscf->servers->nelts; m++, usrv++)
-    {
-        uc_output_server(pui, uscf, usrv, m, groupindex, ((last_post) ? &last_post->server[m] : 0));
-    }
-    strcat(testui, (const char *)"</table></fieldset></form>");
 }
+
 
 /*
  * function:output response content of html script
@@ -704,83 +612,55 @@ uc_output_group(char **pui, ngx_http_upstream_srv_conf_t *uscf, uc_srv_conf_t *u
 static ngx_int_t
 uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag, ngx_uint_t refresh)
 {
+    lua_State *L;
+    ngx_int_t error;
+    const char *lua_ui;
+    ngx_uint_t                      uilen;
+
+    L=luaL_newstate ();
+    if(NULL==L){
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "Failed to allocate memory when create ui lua env");
+    }
+    luaL_openlibs(L);
+
+    error = luaL_loadbuffer(L, (const char*)sucmcf->ui_lua_code.data, sucmcf->ui_lua_code.len,"lua_ui") || lua_pcall(L, 0, 0, 0);
+    if (error!=LUA_OK) {
+
+           ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "failed to load ui lua script: %s",lua_tostring(L, -1));
+           lua_pop(L, 1);  /* pop error message from the stack */
+           lua_close(L);
+           return NGX_HTTP_INTERNAL_SERVER_ERROR;
+
+    }
+    lua_getglobal(L,"write_html");
+    uc_lua_create_ui_data(L);
+    if(lua_pcall(L,1,1,0)!=0){
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "failed to call write_html: %s",lua_tostring(L, -1));
+        lua_pop(L, 1);  /* pop error message from the stack */
+        lua_close(L);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }else{
+        lua_ui=lua_tostring(L,-1);
+        uilen=luaL_len(L,-1);
+    }
+   
+    lua_pop(L,1);
+    lua_close(L);
+
     ngx_chain_t                     out;
     ngx_buf_t                       *b;
-    ngx_uint_t                      i;
-    ngx_uint_t                      uilen;
-    ngx_http_upstream_srv_conf_t    *uscf;
-    uc_main_conf_t                  *ucmcf;
-    uc_srv_conf_t                   *ucscf, **ucscfp;
-    char *p, **pui;
-
-    char testui[UC_MAX_RESPONSE_SIZE];
-
-    memset(testui, 0, sizeof(testui));
-    p = &testui[0];
-    pui = &p;
-    char tmpbuf[TEMPLATE_BUFFER_SIZE];
-    memset(tmpbuf, 0, sizeof(char)*TEMPLATE_BUFFER_SIZE);
-
-    strcat(testui, (const char *)"<!DOCTYPE html><html lang='zh-CN'>"\
-           "<head>"\
-           "<meta charset='utf-8'>"\
-           "<meta http-equiv='X-UA-Compatible' content='IE=edge'>"\
-           "<meta name='viewport' content='width=device-width, initial-scale=1'>"\
-           "<meta http-equiv='content-type' content='text/html; charset=UTF-8'>"
-          );
-    if(refresh == 1)
-    {
-        strcat(testui, (const char *)"<meta http-equiv='refresh' content='5; URL=/upstreams'>");
-    }
-    strcat(testui, (const char *)"<meta name='keywords' content='Nginx, Upstreams, Control, Nginx module' />"\
-           "<meta name='description' content='Nginx Upstreams Control' />"\
-           "<meta name='author' content='dss_liuhl(QQ:1610153337 email:15817409379@163.com)' />"\
-           "<title>Nginx Upstreams</title>"\
-           "<script>"\
-           "window.jQuery || document.write(\'<script src=\"/jquery.min.js\"><\\/script>\');"\
-           "</script>"\
-           "<script src='/bootstrap/js/bootstrap.min.js'></script>"\
-           "<link type='text/css' href='/bootstrap/css/bootstrap.min.css' rel='stylesheet'>"\
-           "</head>"\
-           "<body>"\
-           "<div style='padding:20px;'>");
+    //ngx_uint_t                      i;
 
 
-    ucmcf = ngx_http_get_module_main_conf(r, ngx_http_upstream_ctl_module);
-    ucscfp = ucmcf->upstreams.elts;
+    //char *p, **pui;
 
-    memset(tmpbuf, 0, sizeof(char) * 3);
-    ngx_sprintf((u_char *)tmpbuf, "<h1>Nginx Upstreams(%ui)</h1><label>Uptime: %d days</label>", ucmcf->upstreams.nelts, days);
-    strncat(testui, (const char *)tmpbuf, strlen(tmpbuf));
+    //char testui[UC_MAX_RESPONSE_SIZE];
 
-    if((ngx_int_t)last_post == -1)
-    {
-        strcat(testui, (const char *)"<div class='alert alert-info' role='alert'>The post page has just expired. Please try again.</div>");
-        last_post = 0;
-    }
-
-    uc_sh_conf_t *lpost;
-    for (i = 0; i < ucmcf->upstreams.nelts; i++)
-    {
-
-        ucscf = ucscfp[i];
-        uscf = ucscf->upstream;
-        if ((last_post) && (ngx_strncmp(last_post->host.data, ucscf->host.data, ucscf->host.len) == 0))
-        {
-            lpost = last_post;
-        }
-        else
-        {
-            lpost = 0;
-        }
-        uc_output_group(pui, uscf, ucscf, i, lpost, flag);
-    }
-    strcat(testui, (const char *)"</div>");
-
-    uc_output_editdlg(pui);
-    strcat(testui, (const char *)"</body></html>");
-
-    uilen = strlen(testui);
+    //uilen=strlen(testui);
+    
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = uilen;
     r->headers_out.content_type.len = sizeof("text/html") - 1;
@@ -804,7 +684,9 @@ uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx
 
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    ngx_memcpy(ui, testui, uilen);
+    ngx_memcpy(ui, lua_ui, uilen);
+    //ngx_memcpy(ui, testui, uilen);
+
 
     b->pos = ui;
     b->last = ui + uilen;
@@ -817,57 +699,7 @@ uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx
     return ngx_http_output_filter(r, &out);
 }
 
-/*
- * function:output server edit dialog of html script
- */
-static void
-uc_output_editdlg(char **pui)
-{
-    char *testui;
-    testui = *pui;
-    strcat(testui, (const char *)"<div class='modal fade' id='editdlg' tabindex='-1' role='dialog' aria-labelledby='editdlglabel' datakey=''>"\
-           "<div class='modal-dialog' role='document'>"\
-           "<div class='modal-content'>"\
-           "<div class='modal-header'>"\
-           "<button type='button' class='close' data-dismiss='modal' aria-label='Close'><span aria-hidden='true'>&times;</span></button>"\
-           "<h4 class='modal-title' id='editdlglabel'>Edit</h4>"\
-           "</div>"\
-           "<div class='modal-body'>"\
-           "<form class='form-horizontal'>"\
-           "<div class='form-group'>"\
-           "<label for='m_server' class='col-sm-3 control-label'>Server:</label>"\
-           "<p class='col-sm-9 form-control-static' id='m_server'>192.168.1.105:8525</p>"\
-           "</div>"\
-           "<div class='form-group'>"\
-           "<label for='m_weight' class='col-sm-3 control-label'>Weight:</label>"\
-           "<div class='col-sm-9'><input type='text' class='form-control' id='m_weight' value=''/></div>"\
-           "</div>"\
-           "<div class='form-group'>"\
-           "<label for='m_backup' class='col-sm-3 control-label'>Backup:</label>"\
-           "<div class='col-sm-9'><select class='form-control' id='m_backup'>"\
-           "<option>Yes</option>"\
-           "<option>No</option>"\
-           "</select></div>"\
-           "</div>"\
-           "<div class='form-group'>"\
-           "<label for='m_max_fails' class='col-sm-3 control-label'>max_fails:</label>"\
-           "<div class='col-sm-9'><input type='text' class='form-control' id='m_max_fails' value=''/></div>"\
-           "</div>"\
-           "<div class='form-group'>"\
-           "<label for='m_fail_timeout' class='col-sm-3 control-label'>fail_timeout:</label>"\
-           "<div class='col-sm-9'><input type='text' class='form-control' id='m_fail_timeout' value=''/></div>"\
-           "</div>"\
-           "</form>"\
-           "</div>"\
-           "<div class='modal-footer'>"\
-           "<button type='button' class='btn btn-primary'>OK</button>"\
-           "</div>"\
-           "</div>"\
-           "</div>"\
-           "</div>"\
-           "<script src='/uc.js'></script>"
-          );
-}
+
 
 static ngx_uint_t
 uc_get_ui_status_flag(ngx_uint_t confidx, ngx_uint_t flag)
@@ -1406,6 +1238,130 @@ uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 
 }
 
+static char *
+uc_set_ui_lua_file(ngx_conf_t *cf,ngx_str_t *lua_file)
+{
+    sucmcf->ui_lua_file=*lua_file;
+
+    //read into ui_lua_code
+    ngx_file_t                  file;
+    ngx_file_info_t             fi;
+    size_t                      size;
+    ssize_t                     n;
+    ngx_err_t                   err;
+    ngx_int_t                   lua_err;
+
+    ngx_memzero(&file, sizeof(ngx_file_t));
+    file.name = sucmcf->ui_lua_file;
+    file.log = cf->log;
+
+    file.fd = ngx_open_file(file.name.data, NGX_FILE_RDONLY, 0, 0);
+    if (file.fd == NGX_INVALID_FILE) {
+        err = ngx_errno;
+        if (err != NGX_ENOENT) {
+            ngx_conf_log_error(NGX_LOG_CRIT, cf, err,
+                               ngx_open_file_n " \"%s\" failed", file.name.data);
+        }
+        else{
+            ngx_conf_log_error(NGX_LOG_CRIT, cf, err,
+                               "open \"%s\" failed", file.name.data);
+        }
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_fd_info(file.fd, &fi) == NGX_FILE_ERROR) {
+        ngx_conf_log_error(NGX_LOG_CRIT, cf, ngx_errno,
+                           ngx_fd_info_n " \"%s\" failed", file.name.data);
+        return NGX_CONF_ERROR;
+    }
+
+    size = (size_t) ngx_file_size(&fi);
+
+    sucmcf->ui_lua_code.data = ngx_pcalloc(cf->pool, size);
+    if (sucmcf->ui_lua_code.data == NULL) {
+        ngx_conf_log_error(NGX_LOG_CRIT, cf, 0,
+                           "failed to alloc script code space");
+        return NGX_CONF_ERROR;
+    }
+
+    n = ngx_read_file(&file, sucmcf->ui_lua_code.data, size, 0);
+    sucmcf->ui_lua_code.len=n;
+
+    //test lua 
+    lua_State *L;
+
+    L=luaL_newstate();
+    if(NULL==L){
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                      "failed to create lua env when test ui lua script");
+        return NGX_CONF_ERROR;
+    }
+    luaopen_base(L);         /* opens the basic library */
+    luaopen_table(L);        /* opens the table library */
+    luaopen_string(L);       /* opens the string lib. */
+    luaopen_math(L);         /* opens the math lib. */
+
+    lua_err = luaL_loadbuffer(L, (const char*)sucmcf->ui_lua_code.data, sucmcf->ui_lua_code.len,"lua_ui") || lua_pcall(L, 0, 0, 0);
+    if (lua_err!=LUA_OK) {
+
+           ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                      "failed to load ui lua script: %s",lua_tostring(L, -1));
+           lua_pop(L, 1);  /* pop error message from the stack */
+           lua_close(L);
+           return NGX_CONF_ERROR;
+
+    }
+   
+    lua_pop(L,1);
+    lua_close(L);  
+    return NGX_CONF_OK;
+}
+
+static char *
+uc_cmd_set_ui_lua_file_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    uc_main_conf_t            *ucmcf;
+    ngx_str_t                 *value;
+
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_cmd_set_ui_lua_file_handler");
+
+    ucmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_ctl_module);
+
+    value = cf->args->elts;    //ex:ui_lua_file "/usr/local/nginx/html/ui.lua"
+
+    //duplicate return
+
+    if (value[1].len <= 0)
+    {
+        return "ui_lua_file has no parameter";
+    }
+
+    ucmcf->ui_lua_file=value[1];
+    return uc_set_ui_lua_file(cf,&value[1]);
+
+}
+
+static char *
+uc_cmd_set_timeout_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    uc_main_conf_t            *ucmcf;
+    ngx_str_t                 *value;
+    ngx_int_t                 timeout;
+
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_cmd_set_timeout_handler");
+
+    ucmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_ctl_module);
+
+    value = cf->args->elts;    //ex:timeout 3
+
+    timeout = ngx_atoi(value[1].data, value[1].len);
+    if (timeout == NGX_ERROR) {
+        return "invalid timeout";
+    }
+    ucmcf->timeout=timeout*1000;
+    return NGX_CONF_OK;
+}
+
 static ngx_int_t
 uc_module_preconf(ngx_conf_t *cf)
 {
@@ -1465,6 +1421,49 @@ uc_module_postconf(ngx_conf_t *cf)
         return NGX_OK;
     }
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_module_postconf");
+
+    //set default ui script
+    if(sucmcf->ui_lua_code.len<=0){
+        ngx_str_t                  default_ui;
+        u_char                     *last;
+	ngx_http_core_loc_conf_t   *clcf;
+
+
+        clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+        
+        if(clcf->root.len>0){
+		default_ui.len = clcf->root.len+sizeof("/ui.lua");
+		default_ui.data = ngx_pcalloc(cf->pool, default_ui.len);
+		if (default_ui.data == NULL) {
+		     ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to alloc space for default ui file");
+		     return NGX_ERROR;
+		}
+
+		last = ngx_copy(default_ui.data, clcf->root.data, clcf->root.len);
+		last = ngx_cpystrn(last, (u_char*)"/ui.lua",sizeof("/ui.lua"));
+        }else{
+
+		default_ui.len = sizeof("html/ui.lua");
+		default_ui.data = (u_char*)"html/ui.lua";
+
+		if (ngx_get_full_name(cf->pool, (ngx_str_t *) &ngx_cycle->prefix, &default_ui)!= NGX_OK)
+		{
+		     ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to get default ui file full path");
+		     return NGX_ERROR;
+                 }
+        }
+
+        if(NGX_CONF_OK!=uc_set_ui_lua_file(cf,&default_ui)){
+            ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to set ui lua file %V",&default_ui);
+            return NGX_ERROR;
+        }
+    }
+
+   //set default timeout
+    if(sucmcf->timeout<=0){
+       sucmcf->timeout=3000;
+    }
+
     uc_reg_shzone(cf, sucmcf);
 
     return NGX_OK;
@@ -2909,7 +2908,7 @@ uc_syn_init(ngx_int_t post_id, ngx_uint_t confidx, ngx_http_request_t *r)
     uc_event_data_t *ev_data;
     ev_data = (uc_event_data_t *)sucmcf->timeout_ev->data;
     ev_data->post_id = post_id;
-    ngx_add_timer(sucmcf->timeout_ev, UC_WAIT_OUTTIME);
+    ngx_add_timer(sucmcf->timeout_ev, sucmcf->timeout);
 
     //block request
     r->blocked++;
