@@ -59,6 +59,9 @@ You can view http upstream configuration and statistical upstream service reques
 
 #自定制UI
 #Customize UI by yourself  
+
+目前服务端提供如下API  
+  
    * 配置查询接口    
    (HTTP) GET /upstreams
 
