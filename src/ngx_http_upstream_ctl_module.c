@@ -26,15 +26,12 @@
 //module command value define
 #define UPSTREAM_CTL_ADM_OFF              0
 #define UPSTREAM_CTL_ADM_ON               1
-//temporay buffer size
-#define TEMPLATE_BUFFER_SIZE              8192
-//html response content maxium length
-#define UC_MAX_RESPONSE_SIZE              40000
+
 //allocated share memory size
 #define UC_SHZONE_PAGE_COUNT              9
 //nginx upstream configuration specifacation
 #define UC_MAX_GROUPSRV_NUMBER            10000
-#define UC_MAX_GROUP_NUMBER               1000
+
 //request count
 #define UC_RCOUNT_KEY_ARRAY_INIT_SIZE     5
 
@@ -47,7 +44,7 @@
 #define UI_STATUS_POST_TIMEOUT            2
 #define UI_STATUS_POST_SRV_ERR            3
 #define UI_STATUS_POST_SRV_BUSY           4
-#define UI_STATUS_POST_SRV_ZERO           5
+#define UI_STATUS_POST_PARA_ERR           5
 
 #ifndef NGX_RWLOCK_WLOCK
 #define NGX_RWLOCK_WLOCK  ((ngx_atomic_uint_t) -1)
@@ -60,17 +57,28 @@
 #define uc_trylock(lock)  (*(lock) == 0 && ngx_atomic_cmp_set(lock, 0, NGX_RWLOCK_WLOCK))
 #define uc_unlock(lock)   *(lock) = 0
 
-#define uc_get_display_color(item) ((last_post && (last_post->server.item != usrv->item)) ? "red" : "green")
-#define uc_get_display_value(item) ((last_post) ? last_post->server.item : usrv->item)
-#define uc_get_display_string(item) ((last_post) ? &uc_##item[last_post->server.item] : &uc_##item[usrv->item])
+#define uc_get_lua_call_write_html() &uc_lua_calls[0]
+#define uc_get_lua_call_decode_json() &uc_lua_calls[1]
+#define uc_get_lua_call_encode_json() &uc_lua_calls[2]
 
 ///////////////// type defines ////////////////////////////////////////////
+typedef enum
+{
+    UC_POST_METHOD_UPDATE = 0,
+    UC_POST_METHOD_EDIT,
+    UC_POST_METHOD_ENABLE
+
+} uc_post_method_e;
+
+typedef struct uc_lua_call_s uc_lua_call_t;
 
 typedef char *(*cmd_set_pt)(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 typedef ngx_int_t(*add_event_pt)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
 typedef void(*channel_pt)(ngx_event_t *ev);
 typedef void(*finalize_request_pt)(ngx_http_request_t *r, ngx_int_t rc);
 typedef void(*sigchld_pt)(int signo);
+typedef ngx_int_t (*lua_call_para_pt)(lua_State *L, uc_lua_call_t *c);
+typedef ngx_int_t (*lua_call_rtn_pt)(lua_State *L, uc_lua_call_t *c);
 
 typedef struct   /* copy from ngx_process.c */
 {
@@ -106,6 +114,62 @@ typedef struct  /* copy from ngx_http_upstream_keepalive_module */
 
 } ngx_http_upstream_keepalive_cache_t;
 
+
+typedef struct  /* post request parameters */
+{
+    uc_post_method_e method;
+
+    ngx_int_t        backend;    /* backend index ( begin with 0) */
+    ngx_int_t        server;     /* server index ( begin with 0) */
+
+    ngx_int_t        ip_hash;
+    ngx_int_t        keepalive;
+
+    ngx_int_t        weight;
+    ngx_int_t        backup;
+    ngx_int_t        max_fails;
+    ngx_int_t        fail_timeout;
+
+    ngx_int_t        down;
+
+} uc_post_para_t;
+
+typedef struct
+{
+    ngx_int_t code;    //post response code
+    ngx_str_t message; //post response message text
+
+} uc_post_resp_t;
+
+
+typedef struct
+{
+
+    void      *data;
+    ngx_int_t num;   //parameter or return 's number
+
+} uc_lua_io_t;
+
+struct uc_lua_call_s
+{
+    ngx_str_t           code;                   //lua script code
+    ngx_str_t           call_name;              //lua function name
+    uc_lua_io_t         call_para;
+    uc_lua_io_t         call_rtn;
+    lua_call_para_pt    call_para_handler;      //lua function call parameter process
+    lua_call_rtn_pt     call_rtn_handler;       //lua function call return process
+    ngx_pool_t          *pool;
+    ngx_log_t           *log;
+
+};
+
+typedef struct
+{
+    const char          *data;
+    ngx_int_t           len;
+
+} uc_str_t;
+
 typedef struct
 {
     ngx_http_upstream_server_t  *server;
@@ -136,7 +200,7 @@ typedef struct
 
     ngx_uint_t         timeout;   /* post timeout value */
     ngx_event_t        *timeout_ev;
-    
+
     ngx_array_t        *rcount_key; /* array member type is uc_rcount_key_t */
     ngx_queue_t        rcount_use_queue;
     ngx_queue_t        rcount_free_queue;
@@ -190,10 +254,12 @@ typedef struct
 
 typedef struct
 {
-    uc_srv_conf_t *ucscf;
-    ngx_uint_t    confidx;
-    ngx_int_t     post_id;
-    ngx_socket_t  fd;      //take place
+    uc_srv_conf_t    *ucscf;
+    ngx_int_t        backend;
+    ngx_int_t        post_id;
+    ngx_socket_t     fd;      //take place
+    ngx_int_t        server;
+    uc_post_method_e method;
 
 } uc_event_data_t;
 
@@ -203,8 +269,12 @@ typedef struct
     ngx_int_t            post_id;
     ngx_int_t            status_code;
     ngx_pid_t            post_pid;                 //the worker process that is performing current upstream control request
+
     ngx_http_request_t   *r;
-    ngx_uint_t           syn_conf;                 //syn confidx
+
+    ngx_int_t            backend;                 //syn backend
+    ngx_int_t            server;                  //syn server
+    ngx_int_t            method;                  //syn method
 
 } uc_post_status_t;
 
@@ -241,13 +311,6 @@ typedef struct
 
 } uc_rcount_key_t;
 
-typedef struct uc_node_s
-{
-    char               *name;
-    char               *value;
-    struct uc_node_s   *next;
-
-} uc_node_t;
 
 ////////////////// function declarations /////////////////////////
 
@@ -255,6 +318,7 @@ typedef struct uc_node_s
 static char *uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *uc_cmd_set_ui_lua_file_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *uc_cmd_set_timeout_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *uc_set_ui_lua_file(ngx_conf_t *cf, ngx_str_t *lua_file);
 
 //nginx custome functions
 static ngx_int_t uc_module_preconf(ngx_conf_t *cf);
@@ -272,22 +336,22 @@ static ngx_int_t uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_u
 //share memory functions
 static char *uc_reg_shzone(ngx_conf_t *cf, uc_main_conf_t *ucmcf);
 static ngx_int_t uc_init_shzone(ngx_shm_zone_t *shm_zone, void *data);
-static ngx_int_t uc_download_data_from_shzone(ngx_uint_t confidx);
-static ngx_int_t uc_upload_data_to_shzone(uc_sh_conf_t *conf);
+static ngx_int_t uc_download_data_from_shzone(uc_post_method_e method, ngx_int_t backend, ngx_int_t server);
+static ngx_int_t uc_upload_data_to_shzone(uc_post_para_t *para);
 
 //synchronous functions
 static void uc_channel_handler(ngx_event_t *ev);
 static void uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sigchld_handler(int signo);
-static ngx_int_t uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log);
+static ngx_int_t uc_apply_new_conf(uc_post_method_e method, ngx_int_t backend, ngx_int_t server, ngx_log_t *log);
 static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool);
 static void uc_reset_peers_data(uc_srv_conf_t *ucscf);
 static void uc_apply_conf_post_handler(ngx_event_t *ev);
 static void uc_post_timeout_event_handler(ngx_event_t *ev);
 static void uc_reset_keepalive_cache(ngx_uint_t new_keepalive, uc_srv_conf_t *ucscf, ngx_log_t *log);
 static void uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf_t *ucscf);
-static void uc_syn_init(ngx_int_t post_id, ngx_uint_t confidx, ngx_http_request_t *r);
+static void uc_syn_init(ngx_int_t post_id, uc_post_para_t *para, ngx_http_request_t *r);
 static void uc_send_finalize_req_channel_cmd(ngx_int_t post_id);
 static ngx_int_t uc_apply_lock_trylock(ngx_atomic_t *lock, ngx_uint_t *tries);
 static void uc_apply_lock_rlock(ngx_atomic_t *lock, ngx_uint_t *tries);
@@ -299,7 +363,7 @@ static void uc_get_post_status(uc_post_status_t *post_status);
 static ngx_int_t uc_new_post_id();
 static ngx_pid_t uc_get_post_process();
 static ngx_atomic_t *uc_get_post_lock();
-static ngx_uint_t uc_get_syn_conf();
+//static ngx_uint_t uc_get_syn_conf();
 
 //request count functions
 static void uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused);
@@ -310,17 +374,17 @@ static ngx_uint_t uc_get_rcount(ngx_uint_t group, ngx_uint_t server);
 static void uc_post_request_handler(ngx_http_request_t *r);
 static ngx_int_t uc_request_handler(ngx_http_request_t *r);
 
-//script output functions
-static void uc_lua_create_ui_data(lua_State *L);
-static ngx_int_t uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag, ngx_uint_t refresh);
-static ngx_uint_t uc_get_ui_status_flag(ngx_uint_t confidx, ngx_uint_t flag);
+//response output functions
+static ngx_int_t uc_response_text(ngx_http_request_t *r, ngx_int_t flag);
 
-//script parse functions
-static ngx_int_t uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp);
-static ngx_int_t uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, ngx_pool_t *pool);
-static char uc_hex_trans(char ch);
-static int uc_cmp_name_key(char *name, char *key);
-static char *uc_parse_conf_name(char *name);
+//lua functions
+static ngx_int_t uc_lua_call(uc_lua_call_t *c);
+static ngx_int_t uc_lua_create_para_for_write_html(lua_State *L, uc_lua_call_t *c);
+static ngx_int_t uc_lua_create_para_for_decode_json(lua_State *L, uc_lua_call_t *c);
+static ngx_int_t uc_lua_create_para_for_encode_json(lua_State *L, uc_lua_call_t *c);
+static ngx_int_t uc_lua_get_rtn_from_write_html(lua_State *L, uc_lua_call_t *c);
+static ngx_int_t uc_lua_get_rtn_from_decode_json(lua_State *L, uc_lua_call_t *c);
+static ngx_int_t uc_lua_get_rtn_from_encode_json(lua_State *L, uc_lua_call_t *c);
 
 //time functions
 static ngx_msec_t uc_get_last_update();
@@ -330,7 +394,7 @@ static ngx_int_t uc_get_update_days();
 //utils functions
 static uc_srv_conf_t *uc_get_srv_conf_byhost(uc_main_conf_t *ucmcf, ngx_str_t *host);
 static uc_srv_conf_t *uc_get_srv_conf_byidx(ngx_uint_t confidx);
-static ngx_int_t uc_get_srv_conf_index(uc_main_conf_t *ucmcf, ngx_str_t *host);
+//static ngx_int_t uc_get_srv_conf_index(uc_main_conf_t *ucmcf, ngx_str_t *host);
 static ngx_int_t uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer);
 static ngx_uint_t uc_queue_move(ngx_queue_t *from, ngx_queue_t *to, ngx_uint_t number);
 
@@ -344,9 +408,6 @@ extern ngx_uint_t    ngx_process;
 extern ngx_queue_t   ngx_posted_events;
 extern ngx_signal_t  signals[];
 
-//static ngx_str_t uc_backup[] = {ngx_string("No"), ngx_string("Yes")};
-//static ngx_str_t uc_down[] = {ngx_string("Normal"), ngx_string("Down")};
-//static ngx_str_t uc_enable[] = {ngx_string("disable"), ngx_string("enable")};
 static uc_main_conf_t *sucmcf = 0;
 
 static ngx_command_t  ngx_http_upstream_ctl_commands[] =
@@ -412,6 +473,45 @@ ngx_module_t  ngx_http_upstream_ctl_module =
     NGX_MODULE_V1_PADDING
 };
 
+static uc_lua_call_t uc_lua_calls[] =
+{
+    {
+        ngx_string(""),
+        ngx_string("write_html"),
+        {NULL, 1},
+        {NULL, 1},
+        uc_lua_create_para_for_write_html,
+        uc_lua_get_rtn_from_write_html,
+        NULL,
+        NULL
+    },
+    {
+        ngx_string("function decode_json(json) "\
+        "local cjson = require 'cjson' "\
+        "return cjson.decode(json) "\
+        "end "),
+        ngx_string("decode_json"),
+        {NULL, 1},
+        {NULL, 1},
+        uc_lua_create_para_for_decode_json,
+        uc_lua_get_rtn_from_decode_json,
+        NULL,
+        NULL
+    },
+    {
+        ngx_string("function decode_json(json) "\
+        "local cjson = require 'cjson' "\
+        "return cjson.encode(json) "\
+        "end "),
+        ngx_string("encode_json"),
+        {NULL, 1},
+        {NULL, 1},
+        uc_lua_create_para_for_encode_json,
+        uc_lua_get_rtn_from_encode_json,
+        NULL,
+        NULL
+    }
+};
 
 //////////////////// function defines ///////////////////////////////////////////////
 
@@ -508,161 +608,508 @@ uc_apply_lock_unlock(ngx_atomic_t *lock, ngx_uint_t *tries)
     }
 }
 
-static void 
-uc_lua_create_ui_data(lua_State *L)
+static ngx_int_t
+uc_lua_create_para_for_write_html(lua_State *L, uc_lua_call_t *c)
 {
     ngx_http_upstream_srv_conf_t    *uscf;
     ngx_http_upstream_server_t      *usrv;
     uc_main_conf_t                  *ucmcf;
     uc_srv_conf_t                   *ucscf, **ucscfp;
-    ngx_uint_t                      i,j;
+    ngx_uint_t                      i, j;
 
     ucmcf = sucmcf;
     ucscfp = ucmcf->upstreams.elts;
 
-    lua_newtable(L);  
+    lua_newtable(L);
 
-    lua_pushstring(L,"uptime");
-    lua_pushnumber(L,5);
-    lua_settable(L,-3);
+    lua_pushstring(L, "uptime");
+    lua_pushnumber(L, uc_get_update_days());
+    lua_settable(L, -3);
 
-    lua_pushstring(L,"backend_count");
-    lua_pushnumber(L,ucmcf->upstreams.nelts);
-    lua_settable(L,-3);
+    lua_pushstring(L, "backend_count");
+    lua_pushnumber(L, ucmcf->upstreams.nelts);
+    lua_settable(L, -3);
 
-    lua_pushstring(L,"backend_set");
-    lua_newtable(L); 
+    lua_pushstring(L, "backend_set");
+    lua_newtable(L);
     for (i = 0; i < ucmcf->upstreams.nelts; i++)
     {
-        lua_pushnumber(L,i+1);
+        lua_pushnumber(L, i + 1);
         lua_newtable(L);                 //a backend
-        
+
         ucscf = ucscfp[i];
         uscf = ucscf->upstream;
         usrv = uscf->servers->elts;
 
-        lua_pushstring(L,"backend");
-        lua_pushstring(L,(const char*)uscf->host.data);
-        lua_settable(L,-3);
+        lua_pushstring(L, "backend");
+        lua_pushstring(L, (const char *)uscf->host.data);
+        lua_settable(L, -3);
 
-        lua_pushstring(L,"ip_hash");
-        lua_pushnumber(L,ucscf->ip_hash);
-        lua_settable(L,-3);
+        lua_pushstring(L, "ip_hash");
+        lua_pushnumber(L, ucscf->ip_hash);
+        lua_settable(L, -3);
 
-        lua_pushstring(L,"keepalive");
-        lua_pushnumber(L,ucscf->keepalive);
-        lua_settable(L,-3);
+        lua_pushstring(L, "keepalive");
+        lua_pushnumber(L, ucscf->keepalive);
+        lua_settable(L, -3);
 
-        lua_pushstring(L,"server_count");
-        lua_pushnumber(L,uscf->servers->nelts);
-        lua_settable(L,-3);
+        lua_pushstring(L, "server_count");
+        lua_pushnumber(L, uscf->servers->nelts);
+        lua_settable(L, -3);
 
-        lua_pushstring(L,"server_set");
-        lua_newtable(L); 
+        lua_pushstring(L, "server_set");
+        lua_newtable(L);
         for (j = 0; j < uscf->servers->nelts; j++, usrv++)
-        {   
-            lua_pushnumber(L,j+1);
+        {
+            lua_pushnumber(L, j + 1);
             lua_newtable(L);                 //a server
-                      
-            lua_pushstring(L,"server");
-            lua_pushstring(L,(const char*)usrv->name.data);
-            lua_settable(L,-3);
 
-            lua_pushstring(L,"weight");
-            lua_pushnumber(L,usrv->weight);
-            lua_settable(L,-3);
+            lua_pushstring(L, "server");
+            lua_pushstring(L, (const char *)usrv->name.data);
+            lua_settable(L, -3);
 
-            lua_pushstring(L,"backup");
-            lua_pushnumber(L,usrv->backup);
-            lua_settable(L,-3);
+            lua_pushstring(L, "weight");
+            lua_pushnumber(L, usrv->weight);
+            lua_settable(L, -3);
 
-            lua_pushstring(L,"max_fails");
-            lua_pushnumber(L,usrv->max_fails);
-            lua_settable(L,-3);
+            lua_pushstring(L, "backup");
+            lua_pushnumber(L, usrv->backup);
+            lua_settable(L, -3);
 
-            lua_pushstring(L,"fail_timeout");
-            lua_pushnumber(L,usrv->fail_timeout);
-            lua_settable(L,-3);
+            lua_pushstring(L, "max_fails");
+            lua_pushnumber(L, usrv->max_fails);
+            lua_settable(L, -3);
 
-            lua_pushstring(L,"down");
-            lua_pushnumber(L,usrv->down);
-            lua_settable(L,-3);
+            lua_pushstring(L, "fail_timeout");
+            lua_pushnumber(L, usrv->fail_timeout);
+            lua_settable(L, -3);
 
-            lua_pushstring(L,"requests");
-            lua_pushnumber(L,uc_get_rcount(i, j));
-            lua_settable(L,-3);
+            lua_pushstring(L, "down");
+            lua_pushnumber(L, usrv->down);
+            lua_settable(L, -3);
+
+            lua_pushstring(L, "requests");
+            lua_pushnumber(L, uc_get_rcount(i, j));
+            lua_settable(L, -3);
 
 
-            lua_settable(L,-3);                
-    
+            lua_settable(L, -3);
+
         }
-        lua_settable(L,-3);
+        lua_settable(L, -3);
 
-        lua_settable(L,-3);
+        lua_settable(L, -3);
     }
 
-    lua_settable(L,-3);
+    lua_settable(L, -3);
+
+    return 0;
 
 }
 
-
-/*
- * function:output response content of html script
- */
 static ngx_int_t
-uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx_uint_t flag, ngx_uint_t refresh)
+uc_lua_get_rtn_from_write_html(lua_State *L, uc_lua_call_t *c)
+{
+    uc_str_t *rtn;
+    rtn = (uc_str_t *)c->call_rtn.data;
+
+    rtn->data = lua_tostring(L, -1);
+    rtn->len = luaL_len(L, -1);
+
+    return 0;
+}
+
+static ngx_int_t
+uc_lua_create_para_for_decode_json(lua_State *L, uc_lua_call_t *call)
+{
+    char *start, *b;
+    ngx_chain_t *c;
+    ngx_uint_t blen;
+
+    //compute post parameter string's total length
+
+    c = (ngx_chain_t *)call->call_para.data;
+    blen = 0;
+    while (c != 0)
+    {
+        blen += (c->buf->last - c->buf->pos);
+        c = c->next;
+    }
+
+    //copy chain's content to single buffer
+    start = (char *)ngx_pcalloc(call->pool, blen);
+    if (start == NULL)
+    {
+        ngx_log_error(NGX_LOG_ALERT, call->pool->log, 0,
+                      "faile to alloc buffer when copy chain content");
+        return 1;
+    }
+
+    b = start;
+    c = (ngx_chain_t *)call->call_para.data;
+    while (c != 0)
+    {
+        ngx_memcpy(b, c->buf->pos, c->buf->last - c->buf->pos);
+        b = b + (c->buf->last - c->buf->pos);
+        c = c->next;
+    }
+
+    lua_pushlstring(L, start, blen);
+    return 0;
+}
+
+static ngx_int_t
+uc_lua_get_rtn_from_decode_json(lua_State *L, uc_lua_call_t *call)
+{
+    uc_post_para_t *para;
+    const char *method;
+    para = (uc_post_para_t *)call->call_rtn.data;
+
+    lua_pushstring(L, "method");
+    lua_gettable(L, -2);
+    method = (const char *)lua_tostring(L, -1);
+    //verify method
+    if (strcmp(method, "update") == 0)
+    {
+        para->method = UC_POST_METHOD_UPDATE;
+    }
+    else if (strcmp(method, "edit") == 0)
+    {
+        para->method = UC_POST_METHOD_EDIT;
+    }
+    else if (strcmp(method, "enable") == 0)
+    {
+        para->method = UC_POST_METHOD_ENABLE;
+    }
+    else
+    {
+        ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                      "can't recognize the method");
+        lua_pop(L, 1);
+        return -1;
+    }
+    lua_pop(L, 1);
+
+    lua_pushstring(L, "backend");
+    lua_gettable(L, -2);
+    para->backend = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    //verify backend
+    if ((ngx_uint_t)para->backend >= sucmcf->upstreams.nelts)
+    {
+        ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                      "backend parameter is invalid");
+        return -1;
+    }
+
+    uc_srv_conf_t *ucscf, **ucscfp;
+    ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
+    ucscf = (uc_srv_conf_t *)ucscfp[para->backend];
+    switch (para->method)
+    {
+    case UC_POST_METHOD_UPDATE:
+
+        lua_pushstring(L, "ip_hash");
+        lua_gettable(L, -2);
+        para->ip_hash = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify ip_hash
+        if (para->ip_hash != 0 && para->ip_hash != 1)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "ip_hash parameter is invalid");
+            return -1;
+        }
+
+
+        lua_pushstring(L, "keepalive");
+        lua_gettable(L, -2);
+        para->keepalive = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify keepalive
+        if (para->keepalive < 0)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "keepalive parameter is invalid");
+            return -1;
+        }
+        break;
+    case UC_POST_METHOD_EDIT:
+        lua_pushstring(L, "server");
+        lua_gettable(L, -2);
+        para->server = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify server
+
+        if ((ngx_uint_t)para->server >= ucscf->uc_servers->nelts)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "server parameter is invalid");
+            return -1;
+        }
+
+        lua_pushstring(L, "weight");
+        lua_gettable(L, -2);
+        para->weight = (int)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify weight;
+        if (para->weight <= 0)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "weight parameter is invalid");
+            return -1;
+        }
+
+        lua_pushstring(L, "backup");
+        lua_gettable(L, -2);
+        para->backup = (int)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify backup
+        if (para->backup != 0 && para->backup != 1)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "backup parameter is invalid");
+            return -1;
+        }
+
+        lua_pushstring(L, "max_fails");
+        lua_gettable(L, -2);
+        para->max_fails = (int)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify max_fails
+        if (para->max_fails < 0)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "max_fails parameter is invalid");
+            return -1;
+        }
+
+        lua_pushstring(L, "fail_timeout");
+        lua_gettable(L, -2);
+        para->fail_timeout = (int)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify fail_timeout
+        if (para->fail_timeout < 0)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "fail_timeout parameter is invalid");
+            return -1;
+        }
+
+        break;
+    case UC_POST_METHOD_ENABLE:
+        lua_pushstring(L, "server");
+        lua_gettable(L, -2);
+        para->server = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        //verify server
+        if ((ngx_uint_t)para->server >= ucscf->uc_servers->nelts)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "server parameter is invalid");
+            return -1;
+        }
+
+        lua_pushstring(L, "down");
+        lua_gettable(L, -2);
+        para->down = (int)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        //verify down
+        if (para->down != 0 && para->down != 1)
+        {
+            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+                          "down parameter is invalid");
+            return -1;
+        }
+        break;
+    }
+    return 0;
+}
+
+
+static ngx_int_t
+uc_lua_create_para_for_encode_json(lua_State *L, uc_lua_call_t *call)
+{
+    uc_post_resp_t *resp;
+
+    resp = (uc_post_resp_t *)call->call_para.data;
+
+    lua_newtable(L);
+
+    lua_pushstring(L, "code");
+    lua_pushnumber(L, resp->code);
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "message");
+    lua_pushlstring(L, (const char *)resp->message.data, resp->message.len);
+    lua_settable(L, -3);
+
+
+    lua_settable(L, -3);
+    return 0;
+}
+
+static ngx_int_t
+uc_lua_get_rtn_from_encode_json(lua_State *L, uc_lua_call_t *call)
+{
+    call->call_rtn.data = (char *)lua_tostring(L, -1);
+
+    return 0;
+}
+
+
+static ngx_int_t
+uc_lua_call(uc_lua_call_t *c)
 {
     lua_State *L;
     ngx_int_t error;
-    const char *lua_ui;
-    ngx_uint_t                      uilen;
 
-    L=luaL_newstate ();
-    if(NULL==L){
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+    L = luaL_newstate ();
+    if(NULL == L)
+    {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
                       "Failed to allocate memory when create ui lua env");
+        return 1;  //env problem
     }
     luaL_openlibs(L);
 
-    error = luaL_loadbuffer(L, (const char*)sucmcf->ui_lua_code.data, sucmcf->ui_lua_code.len,"lua_ui") || lua_pcall(L, 0, 0, 0);
-    if (error!=LUA_OK) {
+    error = luaL_loadbuffer(L, (const char *)c->code.data, c->code.len, (const char *)c->call_name.data) || lua_pcall(L, 0, 0, 0);
+    if (error != LUA_OK)
+    {
 
-           ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "failed to load ui lua script: %s",lua_tostring(L, -1));
-           lua_pop(L, 1);  /* pop error message from the stack */
-           lua_close(L);
-           return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "failed to load ui lua script: %s", lua_tostring(L, -1));
 
-    }
-    lua_getglobal(L,"write_html");
-    uc_lua_create_ui_data(L);
-    if(lua_pcall(L,1,1,0)!=0){
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "failed to call write_html: %s",lua_tostring(L, -1));
         lua_pop(L, 1);  /* pop error message from the stack */
         lua_close(L);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }else{
-        lua_ui=lua_tostring(L,-1);
-        uilen=luaL_len(L,-1);
+        return 2;  //load problem
+
     }
-   
-    lua_pop(L,1);
+    lua_getglobal(L, (const char *)c->call_name.data);
+    if (c->call_para_handler(L, c) != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "failed to proc parameter for lua call %V ", &c->call_name);
+        lua_close(L);
+        return 3; //para problem
+    }
+    if(lua_pcall(L, c->call_para.num, c->call_rtn.num, 0) != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "failed to lua call %V: %s", &c->call_name, lua_tostring(L, -1));
+        lua_pop(L, 1);  /* pop error message from the stack */
+        lua_close(L);
+        return 4; //call problem
+    }
+
+    if (c->call_rtn_handler(L, c) != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "failed to proc return for lua call %V", &c->call_name);
+        lua_close(L);
+        return 5; //return problem
+    }
+    lua_pop(L, c->call_rtn.num);
     lua_close(L);
+    return 0; //no problem
+
+
+}
+
+/*
+ * function:output response content of request
+ */
+static ngx_int_t
+uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
+{
 
     ngx_chain_t                     out;
     ngx_buf_t                       *b;
-    //ngx_uint_t                      i;
+    uc_lua_call_t                   *call;
+    uc_post_resp_t                  *resp;
+    uc_str_t                        *rtn;
 
+    if (r->method & NGX_HTTP_POST)
+    {
+        call = uc_get_lua_call_encode_json();
+        resp = ngx_pcalloc(r->pool, sizeof(uc_post_resp_t));
 
-    //char *p, **pui;
+        if (resp == NULL)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "failed to allocate post response space.");
 
-    //char testui[UC_MAX_RESPONSE_SIZE];
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
 
-    //uilen=strlen(testui);
-    
+        switch (flag)
+        {
+        case UI_STATUS_GET:
+            break;
+        case UI_STATUS_POST_OK:
+            resp->code = 0;
+            ngx_str_set(&resp->message, "Update upstreams OK!");
+            break;
+        case UI_STATUS_POST_TIMEOUT:
+            resp->code = 1;
+            ngx_str_set(&resp->message, "Update upstreams timeout.");
+            break;
+        case UI_STATUS_POST_SRV_ERR:
+            resp->code = 2;
+            ngx_str_set(&resp->message, "An error occurs when update upstreams.");
+            break;
+        case UI_STATUS_POST_SRV_BUSY:
+            resp->code = 3;
+            ngx_str_set(&resp->message, "Server is busy, please wait for a moment and try again.");
+            break;
+        case UI_STATUS_POST_PARA_ERR:
+            resp->code = 4;
+            ngx_str_set(&resp->message, "Post parameter error.");
+            break;
+        default:
+            resp->code = 5;
+            ngx_str_set(&resp->message, "An unknown error occurs in server.");
+        }
+
+    }
+    else
+    {
+        call = uc_get_lua_call_write_html();
+        call->pool = r->pool;
+
+    }
+    call->call_rtn.data = ngx_pcalloc(r->pool, sizeof(uc_str_t));
+
+    if (call->call_rtn.data == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "failed to allocate lua call return buffer.");
+
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    call->log = r->connection->log;
+
+    if(uc_lua_call(call) != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "failed to generate ui text using lua.");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rtn = (uc_str_t *)call->call_rtn.data;
+
     r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = uilen;
+    r->headers_out.content_length_n = rtn->len;
     r->headers_out.content_type.len = sizeof("text/html") - 1;
     r->headers_out.content_type.data = (u_char *)"text/html";
 
@@ -677,19 +1124,17 @@ uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    u_char *ui = ngx_palloc(r->pool, uilen);
+    u_char *ui = ngx_palloc(r->pool, rtn->len);
     if (ui == NULL)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate memory for ui.");
 
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    ngx_memcpy(ui, lua_ui, uilen);
-    //ngx_memcpy(ui, testui, uilen);
-
+    ngx_memcpy(ui, rtn->data, rtn->len);
 
     b->pos = ui;
-    b->last = ui + uilen;
+    b->last = ui + rtn->len;
     b->memory = 1;
     b->last_buf = 1;
 
@@ -700,13 +1145,6 @@ uc_output_ui(ngx_http_request_t *r, ngx_int_t days, uc_sh_conf_t *last_post, ngx
 }
 
 
-
-static ngx_uint_t
-uc_get_ui_status_flag(ngx_uint_t confidx, ngx_uint_t flag)
-{
-    return confidx + flag * UC_MAX_GROUP_NUMBER;
-}
-
 static void
 uc_post_request_handler(ngx_http_request_t *r)
 {
@@ -716,43 +1154,12 @@ uc_post_request_handler(ngx_http_request_t *r)
     {
         //can't get post lock
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "the last uc post process has been running, wait next chance");
-        uc_sh_conf_t *conf;
-        ngx_uint_t confidx;
-        ngx_int_t rc;
 
-        conf = 0;
-        rc = uc_parse_post_para(r->request_body->bufs, r->pool, &conf);
-        if( rc == -1)
-        {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "page dismatch error.please refresh and try again");
-            uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0, 1);
-        }
-        else
-        {
-            if(conf == 0)
-            {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "failed to parse post para.");
-                uc_output_ui(r, uc_get_update_days(), 0, 0, 1);
-            }
-            else
-            {
-                confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
-                if(rc == 1)
-                {
-                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO), 1);
-                }
-                else
-                {
-                    uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_BUSY), 1);
-                }
-            }
-        }
-
+        uc_response_text(r, UI_STATUS_POST_SRV_BUSY);
         ngx_http_finalize_request(r, NGX_OK);
         return;
     }
+
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                    "lock post");
 
@@ -760,59 +1167,52 @@ uc_post_request_handler(ngx_http_request_t *r)
     if (r->request_body == NULL || r->request_body->bufs == NULL)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no request body");
+        uc_response_text(r, UI_STATUS_POST_SRV_ERR);
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         uc_unlock(uc_get_post_lock());
         return;
     }
 
-    uc_sh_conf_t *conf;
-    ngx_int_t rc;
-    ngx_uint_t confidx;
-    conf = 0;
+    uc_lua_call_t *call;
+    uc_post_para_t *para;
 
-    rc = uc_parse_post_para(r->request_body->bufs, r->pool, &conf);
-    if( rc == -1)
+    call = uc_get_lua_call_decode_json();
+    call->call_para.data = r->request_body->bufs;
+
+    call->call_rtn.data = ngx_pcalloc(r->pool, sizeof(uc_post_para_t));
+
+    if (call->call_rtn.data == NULL)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "page dismatch error.please refresh and try again");
-        uc_output_ui(r, uc_get_update_days(), (uc_sh_conf_t *) - 1, 0, 1);
+                      "failed to allocate post parameter space.");
+        uc_response_text(r, UI_STATUS_POST_SRV_ERR);
         ngx_http_finalize_request(r, NGX_OK);
         uc_unlock(uc_get_post_lock());
         return;
     }
-    else
+    call->log = r->connection->log;
+
+    if (uc_lua_call(call) != 0)
     {
 
-        if(conf == 0)
-        {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "failed to parse post para");
-            ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-            uc_unlock(uc_get_post_lock());
-            return;
-        }
-        else
-        {
-            if(rc == 1)
-            {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "no server in the upstream");
-                confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
-                uc_output_ui(r, uc_get_update_days(), conf, uc_get_ui_status_flag(confidx, UI_STATUS_POST_SRV_ZERO), 1);
-                ngx_http_finalize_request(r, NGX_OK);
-                uc_unlock(uc_get_post_lock());
-                return;
-            }
-        }
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "failed to decode post parameter");
+        uc_response_text(r, UI_STATUS_POST_PARA_ERR);
+        ngx_http_finalize_request(r, NGX_OK);
+        uc_unlock(uc_get_post_lock());
+        return;
     }
+
+    para = (uc_post_para_t *)call->call_rtn.data;
 
     ngx_int_t post_id;
     post_id = uc_new_post_id();
     //upload new upstream configuration to share memory zone
-    if(uc_upload_data_to_shzone(conf) == -1)
+    if(uc_upload_data_to_shzone(para) == -1)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "failed to upload post data to share memory zone");
+        uc_response_text(r, UI_STATUS_POST_SRV_ERR);
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         uc_unlock(uc_get_post_lock());
         return;
@@ -822,363 +1222,19 @@ uc_post_request_handler(ngx_http_request_t *r)
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                    "send sig SIG_UPSTREAM_SYN to master process");
 
-
-    confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
-
-    uc_syn_init(post_id, confidx, r);
+    uc_syn_init(post_id, para, r);
 
     if (sigqueue(getppid(), SIG_UPSTREAM_SYN, (const union sigval)(int)post_id) == -1)
     {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno, "failed to send sig SIG_UPSTREAM_SYN.");
+        uc_response_text(r, UI_STATUS_POST_SRV_ERR);
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         uc_unlock(uc_get_post_lock());
+        return;
     }
     ngx_http_finalize_request(r, NGX_OK);
 }
 
-static int
-uc_cmp_name_key(char *name, char *key)
-{
-    char *n, *k;
-    ngx_int_t nlen, klen;
-    nlen = strlen(name);
-    klen = strlen(key);
-    if(nlen < klen)
-    {
-        return -1;
-    }
-
-    for(n = name + nlen, k = key + klen;; n--, k--)
-    {
-        if(*k != *n)
-        {
-            return -1;
-        }
-        if(k == key)
-        {
-            break;
-        }
-
-    }
-    return 0;
-
-}
-
-static char *
-uc_parse_conf_name(char *name)
-{
-
-    char *p, *conf;
-
-    conf = 0;
-
-    if(strstr(name, "post[") != 0)
-    {
-        p = name + strlen("post[");
-        conf = p;
-
-        while(*p != 0)
-        {
-            if(*p == ']')
-            {
-                *p = 0;
-                break;
-            }
-            p++;
-        }
-
-    }
-    return conf;
-
-}
-
-
-static ngx_int_t
-uc_para_assign(uc_sh_conf_t *conf, char *name, ngx_uint_t *index, char *value, ngx_pool_t *pool)
-{
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
-                   "uc_para_assign");
-    if(uc_cmp_name_key(name, "[iphash]") == 0)
-    {
-        conf->ip_hash = ngx_atoi((u_char *)value, strlen(value));
-    }
-    else if(uc_cmp_name_key(name, "[keepalive]") == 0)
-    {
-        conf->keepalive = ngx_atoi((u_char *)value, strlen(value));
-    }
-    else if(uc_cmp_name_key(name, "[submit]") == 0)
-    {
-        uc_srv_conf_t *ucscf;
-        char *host;
-        host = uc_parse_conf_name(name);
-        conf->host.len = strlen(host);
-        conf->host.data = ngx_pcalloc(pool, conf->host.len);
-        if(conf->host.data == NULL)
-        {
-            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                          "failed to alloc post host para space");
-            return -1;
-        }
-        ngx_memcpy(conf->host.data, host, conf->host.len);
-
-        ucscf = uc_get_srv_conf_byhost(sucmcf, &conf->host);
-        if(ucscf == NULL)
-        {
-            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                          "request group name dismatch runing group name");
-            return -1;
-        }
-        conf->server = ngx_pcalloc(pool, sizeof(uc_sh_server_t) * ucscf->upstream->servers->nelts);
-        if(conf->server == NULL)
-        {
-            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                          "failed to alloc uc_sh_server_t when parse post para and assign value");
-            return -1;
-        }
-        conf->num = ucscf->upstream->servers->nelts;
-
-    }
-    else if(uc_cmp_name_key(name, "[name]") == 0)
-    {
-        if((*index) >= conf->num)  return -1;
-        conf->server[*index].server.name.len = strlen(value);
-        conf->server[*index].server.name.data = ngx_pcalloc(pool, conf->server[*index].server.name.len);
-        if(conf->server[*index].server.name.data == NULL)
-        {
-            ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                          "failed to alloc post server name para space");
-            return -1;
-        }
-        ngx_memcpy(conf->server[*index].server.name.data, value, conf->server[*index].server.name.len);
-
-
-    }
-    else if(uc_cmp_name_key(name, "[weight]") == 0)
-    {
-        if((*index) >= conf->num)  return -1;
-        conf->server[*index].server.weight = ngx_atoi((u_char *)value, strlen(value));
-    }
-    else if(uc_cmp_name_key(name, "[backup]") == 0)
-    {
-        if((*index) >= conf->num)  return -1;
-        if(ngx_strncasecmp((u_char *)value, (u_char *)"Yes", 3) == 0)
-        {
-            conf->server[*index].server.backup = 1;
-        }
-        else if(ngx_strncasecmp((u_char *)value, (u_char *)"No", 2) == 0)
-        {
-            conf->server[*index].server.backup = 0;
-        }
-    }
-    else if(uc_cmp_name_key(name, "[max_fails]") == 0)
-    {
-        if((*index) >= conf->num)  return -1;
-        conf->server[*index].server.max_fails = ngx_atoi((u_char *)value, strlen(value));
-    }
-    else if(uc_cmp_name_key(name, "[fail_timeout]") == 0)
-    {
-        if((*index) >= conf->num)  return -1;
-        conf->server[*index].server.fail_timeout = ngx_atoi((u_char *)value, strlen(value));
-    }
-    else if(uc_cmp_name_key(name, "[status]") == 0)
-    {
-        if((*index) >= conf->num)  return -1;
-        if(ngx_strncasecmp((u_char *)value, (u_char *)"Normal", 6) == 0)
-        {
-            conf->server[*index].server.down = 0;
-        }
-        else if(ngx_strncasecmp((u_char *)value, (u_char *)"Down", 4) == 0)
-        {
-            conf->server[*index].server.down = 1;
-        }
-
-        (*index)++;
-    }
-    else
-    {
-        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                      "post para dosen't exist");
-        return -1;
-    }
-    return 0;
-}
-
-/*
- * parse post parameters from html POST request
- */
-static ngx_int_t
-uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_sh_conf_t **confp)
-{
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, pool->log, 0,
-                   "uc_parse_post_para");
-    char *start, *end, *b, *token;
-    ngx_chain_t *c;
-    uc_node_t *head, *iter;
-    ngx_uint_t i, blen;
-    uc_sh_conf_t *conf;
-
-    //compute post parameter string's total length
-
-    c = postbufs;
-    blen = 0;
-    while(c != 0)
-    {
-        blen += (c->buf->last - c->buf->pos);
-        c = c->next;
-    }
-
-    //copy chain's content to single buffer
-
-    start = (char *)ngx_pnalloc(pool, blen);
-    if(start == NULL)
-    {
-        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                      "faile to alloc buffer when copy chain content");
-        return -1;
-    }
-    end = start + blen;
-
-    b = start;
-    c = postbufs;
-    while(c != 0)
-    {
-        ngx_memcpy(b, c->buf->pos, c->buf->last - c->buf->pos);
-        b = b + (c->buf->last - c->buf->pos);
-        c = c->next;
-    }
-
-    //parse buffer to node struct
-
-    head = ngx_pcalloc(pool, sizeof(uc_node_t));
-    if(head == NULL)
-    {
-        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                      "faile to alloc node when parse node struct");
-        return -1;
-    }
-
-    iter = head;
-
-
-    b = start;
-    token = start;
-    iter -> name = token;
-
-
-    while (1)
-    {
-        if (*b == '=')
-        {
-            *token = 0;
-            iter->value = token + 1;
-        }
-        else if (*b == '+')
-        {
-            *token = ' ';
-        }
-        else if (*b == '%')
-        {
-            *token = uc_hex_trans(*(b + 1)) * 16 + uc_hex_trans(*(b + 2));
-            b += 2;
-        }
-        else if (*b == '&')
-        {
-            *token = 0;
-            iter->next = ngx_pcalloc(pool, sizeof(uc_node_t));
-            if(iter->next == NULL)
-            {
-                ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                              "faile to alloc node when parse node struct");
-                return -1;
-            }
-
-            iter = iter->next;
-            iter->name = token + 1;
-        }
-        else
-        {
-
-            *token = *b;
-        }
-
-        if(b >= end)
-        {
-            token++;
-            *token = 0;
-            break;
-        }
-        b++;
-        token++;
-    }
-
-    //parse node struct to uc_sh_conf_t struct
-
-    conf = ngx_pcalloc(pool, sizeof(uc_sh_conf_t));
-    if(conf == NULL)
-    {
-        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                      "faile to alloc uc_sh_conf_t when parse post para");
-        return -1;
-    }
-
-    i = 0;
-    iter = head;
-    while(iter != 0)
-    {
-        if(uc_para_assign(conf, iter->name, &i, iter->value, pool) == -1)
-        {
-            return -1;
-        }
-        iter = iter->next;
-    }
-    if(conf->num != i)
-    {
-        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                      "request server row count dismatch runing server row count");
-        return -1;
-    }
-
-    *confp = conf;
-
-    //if all server is backup a mistacke will occur
-    ngx_uint_t active_peer;
-    active_peer = 0;
-    for(i = 0; i < conf->num; i++)
-    {
-        if(!conf->server[i].server.backup)
-        {
-            active_peer++;
-        }
-    }
-    if(active_peer == 0)
-    {
-        ngx_log_error(NGX_LOG_ALERT, pool->log, 0,
-                      "all server is backup server");
-        return 1;
-    }
-
-
-    return 0;
-}
-
-static char
-uc_hex_trans(char ch)
-{
-    char c;
-    if (ch < 'A')
-    {
-        c = ch - 48;
-    }
-    else if (ch < 'a')
-    {
-        c = ch - 55;
-    }
-    else
-    {
-        c = ch - 87;
-    }
-    return c;
-}
 
 static ngx_int_t
 uc_request_handler(ngx_http_request_t *r)
@@ -1197,7 +1253,7 @@ uc_request_handler(ngx_http_request_t *r)
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
                        "uc_request_handler this is a get request.");
 
-        return uc_output_ui(r, uc_get_update_days(), 0, UI_STATUS_GET, 0);
+        return uc_response_text(r, UI_STATUS_GET);
 
     }
 }
@@ -1239,9 +1295,9 @@ uc_cmd_set_upstreams_admin_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 }
 
 static char *
-uc_set_ui_lua_file(ngx_conf_t *cf,ngx_str_t *lua_file)
+uc_set_ui_lua_file(ngx_conf_t *cf, ngx_str_t *lua_file)
 {
-    sucmcf->ui_lua_file=*lua_file;
+    sucmcf->ui_lua_file = *lua_file;
 
     //read into ui_lua_code
     ngx_file_t                  file;
@@ -1256,20 +1312,24 @@ uc_set_ui_lua_file(ngx_conf_t *cf,ngx_str_t *lua_file)
     file.log = cf->log;
 
     file.fd = ngx_open_file(file.name.data, NGX_FILE_RDONLY, 0, 0);
-    if (file.fd == NGX_INVALID_FILE) {
+    if (file.fd == NGX_INVALID_FILE)
+    {
         err = ngx_errno;
-        if (err != NGX_ENOENT) {
+        if (err != NGX_ENOENT)
+        {
             ngx_conf_log_error(NGX_LOG_CRIT, cf, err,
                                ngx_open_file_n " \"%s\" failed", file.name.data);
         }
-        else{
+        else
+        {
             ngx_conf_log_error(NGX_LOG_CRIT, cf, err,
                                "open \"%s\" failed", file.name.data);
         }
         return NGX_CONF_ERROR;
     }
 
-    if (ngx_fd_info(file.fd, &fi) == NGX_FILE_ERROR) {
+    if (ngx_fd_info(file.fd, &fi) == NGX_FILE_ERROR)
+    {
         ngx_conf_log_error(NGX_LOG_CRIT, cf, ngx_errno,
                            ngx_fd_info_n " \"%s\" failed", file.name.data);
         return NGX_CONF_ERROR;
@@ -1278,22 +1338,24 @@ uc_set_ui_lua_file(ngx_conf_t *cf,ngx_str_t *lua_file)
     size = (size_t) ngx_file_size(&fi);
 
     sucmcf->ui_lua_code.data = ngx_pcalloc(cf->pool, size);
-    if (sucmcf->ui_lua_code.data == NULL) {
+    if (sucmcf->ui_lua_code.data == NULL)
+    {
         ngx_conf_log_error(NGX_LOG_CRIT, cf, 0,
                            "failed to alloc script code space");
         return NGX_CONF_ERROR;
     }
 
     n = ngx_read_file(&file, sucmcf->ui_lua_code.data, size, 0);
-    sucmcf->ui_lua_code.len=n;
+    sucmcf->ui_lua_code.len = n;
 
-    //test lua 
+    //test lua
     lua_State *L;
 
-    L=luaL_newstate();
-    if(NULL==L){
+    L = luaL_newstate();
+    if(NULL == L)
+    {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                      "failed to create lua env when test ui lua script");
+                           "failed to create lua env when test ui lua script");
         return NGX_CONF_ERROR;
     }
     luaopen_base(L);         /* opens the basic library */
@@ -1301,19 +1363,27 @@ uc_set_ui_lua_file(ngx_conf_t *cf,ngx_str_t *lua_file)
     luaopen_string(L);       /* opens the string lib. */
     luaopen_math(L);         /* opens the math lib. */
 
-    lua_err = luaL_loadbuffer(L, (const char*)sucmcf->ui_lua_code.data, sucmcf->ui_lua_code.len,"lua_ui") || lua_pcall(L, 0, 0, 0);
-    if (lua_err!=LUA_OK) {
+    lua_err = luaL_loadbuffer(L, (const char *)sucmcf->ui_lua_code.data, sucmcf->ui_lua_code.len, "lua_ui") || lua_pcall(L, 0, 0, 0);
+    if (lua_err != LUA_OK)
+    {
 
-           ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                      "failed to load ui lua script: %s",lua_tostring(L, -1));
-           lua_pop(L, 1);  /* pop error message from the stack */
-           lua_close(L);
-           return NGX_CONF_ERROR;
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                           "failed to load ui lua script: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);  /* pop error message from the stack */
+        lua_close(L);
+        return NGX_CONF_ERROR;
 
     }
-   
-    lua_pop(L,1);
-    lua_close(L);  
+
+    lua_pop(L, 1);
+    lua_close(L);
+
+    //copy lua ui code to static call struct
+    uc_lua_call_t *call;
+    call = uc_get_lua_call_write_html();
+    call->code.data = sucmcf->ui_lua_code.data;
+    call->code.len = sucmcf->ui_lua_code.len;
+
     return NGX_CONF_OK;
 }
 
@@ -1326,18 +1396,20 @@ uc_cmd_set_ui_lua_file_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_cmd_set_ui_lua_file_handler");
 
     ucmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_ctl_module);
+    if (ucmcf->ui_lua_file.len != 0 || ucmcf->ui_lua_file.data != 0)
+    {
+        return "is duplicate";
+    }
 
     value = cf->args->elts;    //ex:ui_lua_file "/usr/local/nginx/html/ui.lua"
 
-    //duplicate return
-
     if (value[1].len <= 0)
     {
-        return "ui_lua_file has no parameter";
+        return "ui_lua_file directive has no parameter";
     }
 
-    ucmcf->ui_lua_file=value[1];
-    return uc_set_ui_lua_file(cf,&value[1]);
+    ucmcf->ui_lua_file = value[1];
+    return uc_set_ui_lua_file(cf, &value[1]);
 
 }
 
@@ -1355,10 +1427,11 @@ uc_cmd_set_timeout_handler(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     value = cf->args->elts;    //ex:timeout 3
 
     timeout = ngx_atoi(value[1].data, value[1].len);
-    if (timeout == NGX_ERROR) {
+    if (timeout == NGX_ERROR)
+    {
         return "invalid timeout";
     }
-    ucmcf->timeout=timeout*1000;
+    ucmcf->timeout = timeout * 1000;
     return NGX_CONF_OK;
 }
 
@@ -1423,45 +1496,52 @@ uc_module_postconf(ngx_conf_t *cf)
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "uc_module_postconf");
 
     //set default ui script
-    if(sucmcf->ui_lua_code.len<=0){
+    if(sucmcf->ui_lua_code.len <= 0)
+    {
         ngx_str_t                  default_ui;
         u_char                     *last;
-	ngx_http_core_loc_conf_t   *clcf;
+        ngx_http_core_loc_conf_t   *clcf;
 
 
         clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-        
-        if(clcf->root.len>0){
-		default_ui.len = clcf->root.len+sizeof("/ui.lua");
-		default_ui.data = ngx_pcalloc(cf->pool, default_ui.len);
-		if (default_ui.data == NULL) {
-		     ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to alloc space for default ui file");
-		     return NGX_ERROR;
-		}
 
-		last = ngx_copy(default_ui.data, clcf->root.data, clcf->root.len);
-		last = ngx_cpystrn(last, (u_char*)"/ui.lua",sizeof("/ui.lua"));
-        }else{
+        if(clcf->root.len > 0)
+        {
+            default_ui.len = clcf->root.len + sizeof("/ui.lua");
+            default_ui.data = ngx_pcalloc(cf->pool, default_ui.len);
+            if (default_ui.data == NULL)
+            {
+                ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to alloc space for default ui file");
+                return NGX_ERROR;
+            }
 
-		default_ui.len = sizeof("html/ui.lua");
-		default_ui.data = (u_char*)"html/ui.lua";
+            last = ngx_copy(default_ui.data, clcf->root.data, clcf->root.len);
+            last = ngx_cpystrn(last, (u_char *)"/ui.lua", sizeof("/ui.lua"));
+        }
+        else
+        {
 
-		if (ngx_get_full_name(cf->pool, (ngx_str_t *) &ngx_cycle->prefix, &default_ui)!= NGX_OK)
-		{
-		     ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to get default ui file full path");
-		     return NGX_ERROR;
-                 }
+            default_ui.len = sizeof("html/ui.lua");
+            default_ui.data = (u_char *)"html/ui.lua";
+
+            if (ngx_get_full_name(cf->pool, (ngx_str_t *) &ngx_cycle->prefix, &default_ui) != NGX_OK)
+            {
+                ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to get default ui file full path");
+                return NGX_ERROR;
+            }
         }
 
-        if(NGX_CONF_OK!=uc_set_ui_lua_file(cf,&default_ui)){
-            ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to set ui lua file %V",&default_ui);
+        if(NGX_CONF_OK != uc_set_ui_lua_file(cf, &default_ui))
+        {
+            ngx_conf_log_error(NGX_LOG_ALERT, cf, 0, "failed to set ui lua file %V", &default_ui);
             return NGX_ERROR;
         }
     }
 
-   //set default timeout
-    if(sucmcf->timeout<=0){
-       sucmcf->timeout=3000;
+    //set default timeout
+    if(sucmcf->timeout <= 0)
+    {
+        sucmcf->timeout = 3000;
     }
 
     uc_reg_shzone(cf, sucmcf);
@@ -1683,7 +1763,7 @@ uc_get_srv_conf_byidx(ngx_uint_t confidx)
     return (uc_srv_conf_t *)ucscfp[confidx];
 }
 
-static ngx_int_t
+/*static ngx_int_t
 uc_get_srv_conf_index(uc_main_conf_t *ucmcf, ngx_str_t *host)
 {
     uc_srv_conf_t *ucscf, **ucscfp;
@@ -1701,7 +1781,7 @@ uc_get_srv_conf_index(uc_main_conf_t *ucmcf, ngx_str_t *host)
     }
 
     return -1;
-}
+}*/
 
 static ngx_int_t
 uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer)
@@ -2278,12 +2358,14 @@ uc_channel_handler(ngx_event_t *ev)
                 ngx_log_error(NGX_LOG_NOTICE, ev->log, 0, "post has aborted. postid1:%d postid2:%d code:%d", post_id, post_status.post_id, post_status.status_code);
                 break;
             }
-            uc_download_data_from_shzone(post_status.syn_conf);
+            uc_download_data_from_shzone(post_status.method, post_status.backend, post_status.server);
 
-            ucscf = uc_get_srv_conf_byidx(post_status.syn_conf);
+            ucscf = uc_get_srv_conf_byidx(post_status.backend);
             ev_data = (uc_event_data_t *)ucscf->apply_ev->data;
             ev_data->ucscf = ucscf;
-            ev_data->confidx = post_status.syn_conf;
+            ev_data->method = post_status.method;
+            ev_data->backend = post_status.backend;
+            ev_data->server = post_status.server;
             ev_data->post_id = post_id;
             ngx_post_event(ucscf->apply_ev, &ngx_posted_events);
 
@@ -2327,7 +2409,7 @@ uc_apply_conf_post_handler(ngx_event_t *ev)
     if(uc_apply_lock_trylock(&ev_data->ucscf->apply_lock, &ev_data->ucscf->apply_lock_tries))
     {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "get apply conf lock");
-        uc_apply_new_conf(ev_data->confidx, ev->log);
+        uc_apply_new_conf(ev_data->method, ev_data->backend, ev_data->server, ev->log);
         uc_apply_lock_unlock(&ev_data->ucscf->apply_lock, &ev_data->ucscf->apply_lock_tries);
 
         if (sigqueue(getppid(), SIG_UPSTREAM_SYN_ACK, (const union sigval)(int)post_id) == -1)
@@ -2353,8 +2435,6 @@ uc_finalize_post_request(ngx_http_request_t *r, ngx_int_t rc)
 {
     ngx_log_debug0(NGX_LOG_DEBUG_EVENT, r->connection->log, 0, "uc_finalize_post_request");
 
-    ngx_uint_t flag;
-
     //del timeout timer
     if(sucmcf->timeout_ev->timer_set)
     {
@@ -2365,9 +2445,8 @@ uc_finalize_post_request(ngx_http_request_t *r, ngx_int_t rc)
         uc_set_last_update();
 
     }
-    flag = uc_get_ui_status_flag(uc_get_syn_conf(), rc);
 
-    uc_output_ui(r, uc_get_update_days(), 0, flag, 1);
+    uc_response_text(r, rc);
     r->blocked--;
     ngx_http_finalize_request(r, NGX_DONE);
     uc_unlock(uc_get_post_lock());
@@ -2810,7 +2889,7 @@ uc_get_post_process()
 }
 
 
-static ngx_uint_t
+/*static ngx_uint_t
 uc_get_syn_conf()
 {
     ngx_slab_pool_t                *shpool;
@@ -2823,7 +2902,7 @@ uc_get_syn_conf()
     confidx = ucsh->post_status.syn_conf;
     ngx_rwlock_unlock(&ucsh->status_lock);
     return confidx;
-}
+}*/
 
 static ngx_int_t
 uc_new_post_id(ngx_int_t code)
@@ -2853,7 +2932,11 @@ uc_get_post_status(uc_post_status_t *post_status)
     post_status->post_id = ucsh->post_status.post_id;
     post_status->status_code = ucsh->post_status.status_code;
     post_status->r = ucsh->post_status.r;
-    post_status->syn_conf = ucsh->post_status.syn_conf;
+    //post_status->syn_conf = ucsh->post_status.syn_conf;
+    post_status->method = ucsh->post_status.method;
+    post_status->backend = ucsh->post_status.backend;
+    post_status->server = ucsh->post_status.server;
+
     post_status->post_pid = ucsh->post_status.post_pid;
 
     ngx_rwlock_unlock(&ucsh->status_lock);
@@ -2882,7 +2965,7 @@ uc_post_status_is_valid(ngx_int_t post_id, uc_post_status_t *post_status)
  * initialize synchronous data, set synchronous event and block the request
  */
 static void
-uc_syn_init(ngx_int_t post_id, ngx_uint_t confidx, ngx_http_request_t *r)
+uc_syn_init(ngx_int_t post_id, uc_post_para_t *para, ngx_http_request_t *r)
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
@@ -2893,7 +2976,11 @@ uc_syn_init(ngx_int_t post_id, ngx_uint_t confidx, ngx_http_request_t *r)
     ngx_rwlock_wlock(&ucsh->status_lock);
     ucsh->post_status.status_code = UI_STATUS_POST_OK;
     ucsh->post_status.post_pid = getpid();
-    ucsh->post_status.syn_conf = confidx;
+
+    ucsh->post_status.backend = para->backend;
+    ucsh->post_status.server = para->server;
+    ucsh->post_status.method = para->method;
+
     ucsh->post_status.post_id = post_id;
     ucsh->post_status.r = r;
     ngx_rwlock_unlock(&ucsh->status_lock);
@@ -2979,51 +3066,52 @@ uc_set_post_status_code(ngx_int_t code)
 }
 
 static ngx_int_t
-uc_upload_data_to_shzone(uc_sh_conf_t *conf)
+uc_upload_data_to_shzone(uc_post_para_t *para)
 {
-    ngx_int_t confidx;
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
                    "uc_upload_data_to_shzone");
-    confidx = uc_get_srv_conf_index(sucmcf, &conf->host);
-    if (confidx != -1)
+
+    shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
+    ucsh = (uc_sh_t *)shpool->data;
+
+    switch (para->method)
     {
+    case UC_POST_METHOD_UPDATE:
+        ngx_rwlock_wlock(&ucsh->conf[para->backend].conf_lock);
+        ucsh->conf[para->backend].ip_hash = para->ip_hash;
+        ucsh->conf[para->backend].keepalive = para->keepalive;
+        ngx_rwlock_unlock(&ucsh->conf[para->backend].conf_lock);
+        break;
 
-        shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
-        ucsh = (uc_sh_t *)shpool->data;
-
-        ngx_rwlock_wlock(&ucsh->conf[confidx].conf_lock);
-
-        ucsh->conf[confidx].ip_hash = conf->ip_hash;
-        ucsh->conf[confidx].keepalive = conf->keepalive;
-
-        ngx_uint_t i;
-        uc_srv_conf_t *ucscf, **ucscfp;
-
-        ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
-        ucscf = (uc_srv_conf_t *)ucscfp[confidx];
-
-        for (i = 0; i < ucscf->upstream->servers->nelts; i++)
-        {
-            ngx_memcpy(&ucsh->conf[confidx].server[i].server, &conf->server[i].server, sizeof(ngx_http_upstream_server_t));
-        }
-
-        ngx_rwlock_unlock(&ucsh->conf[confidx].conf_lock);
-        return 0;
-
+    case UC_POST_METHOD_EDIT:
+        ngx_rwlock_wlock(&ucsh->conf[para->backend].conf_lock);
+        ucsh->conf[para->backend].server[para->server].server.weight = para->weight;
+        ucsh->conf[para->backend].server[para->server].server.max_fails = para->max_fails;
+        ucsh->conf[para->backend].server[para->server].server.fail_timeout = para->fail_timeout;
+        ucsh->conf[para->backend].server[para->server].server.backup = para->backup;
+        ngx_rwlock_unlock(&ucsh->conf[para->backend].conf_lock);
+        break;
+    case UC_POST_METHOD_ENABLE:
+        ngx_rwlock_wlock(&ucsh->conf[para->backend].conf_lock);
+        ucsh->conf[para->backend].server[para->server].server.down = para->down;
+        ngx_rwlock_unlock(&ucsh->conf[para->backend].conf_lock);
+        break;
+    default:
+        return -1;
     }
-    return -1;
+    return 0;
+
 }
 
 static ngx_int_t
-uc_download_data_from_shzone(ngx_uint_t confidx)
+uc_download_data_from_shzone(uc_post_method_e method, ngx_int_t backend, ngx_int_t server)
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
-    ngx_uint_t i;
-    uc_srv_conf_t *ucscf, **ucscfp;
+    uc_srv_conf_t                  *ucscf, **ucscfp;
 
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
                    "uc_download_data_from_shzone");
@@ -3031,20 +3119,34 @@ uc_download_data_from_shzone(ngx_uint_t confidx)
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
 
-    ngx_rwlock_rlock(&ucsh->conf[confidx].conf_lock);
-
     ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
-    ucscf = (uc_srv_conf_t *)ucscfp[confidx];
+    ucscf = (uc_srv_conf_t *)ucscfp[backend];
 
-    ucscf->temp_conf->ip_hash = ucsh->conf[confidx].ip_hash;
-    ucscf->temp_conf->keepalive = ucsh->conf[confidx].keepalive;
-
-    for (i = 0; i < ucscf->upstream->servers->nelts; i++)
+    switch (method)
     {
-        ngx_memcpy(&ucscf->temp_conf->server[i].server, &ucsh->conf[confidx].server[i].server, sizeof(ngx_http_upstream_server_t));
-    }
+    case UC_POST_METHOD_UPDATE:
+        ngx_rwlock_rlock(&ucsh->conf[backend].conf_lock);
+        ucscf->temp_conf->ip_hash = ucsh->conf[backend].ip_hash;
+        ucscf->temp_conf->keepalive = ucsh->conf[backend].keepalive;
+        ngx_rwlock_unlock(&ucsh->conf[backend].conf_lock);
+        break;
 
-    ngx_rwlock_unlock(&ucsh->conf[confidx].conf_lock);
+    case UC_POST_METHOD_EDIT:
+        ngx_rwlock_rlock(&ucsh->conf[backend].conf_lock);
+        ucscf->temp_conf->server[server].server.weight = ucsh->conf[backend].server[server].server.weight;
+        ucscf->temp_conf->server[server].server.max_fails = ucsh->conf[backend].server[server].server.max_fails;
+        ucscf->temp_conf->server[server].server.fail_timeout = ucsh->conf[backend].server[server].server.fail_timeout;
+        ucscf->temp_conf->server[server].server.backup = ucsh->conf[backend].server[server].server.backup;
+        ngx_rwlock_unlock(&ucsh->conf[backend].conf_lock);
+        break;
+    case UC_POST_METHOD_ENABLE:
+        ngx_rwlock_rlock(&ucsh->conf[backend].conf_lock);
+        ucscf->temp_conf->server[server].server.down = ucsh->conf[backend].server[server].server.down;
+        ngx_rwlock_unlock(&ucsh->conf[backend].conf_lock);
+        break;
+    default:
+        return -1;
+    }
 
     return 0;
 }
@@ -3082,7 +3184,7 @@ uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf
  * function: the real modification of configuration
  */
 static ngx_int_t
-uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
+uc_apply_new_conf(uc_post_method_e method, ngx_int_t backend, ngx_int_t server, ngx_log_t *log)
 {
     uc_srv_conf_t *ucscf, **ucscfp;
     uc_server_t *ucsrv;
@@ -3091,60 +3193,94 @@ uc_apply_new_conf(ngx_uint_t confidx, ngx_log_t *log)
                    "uc_apply_new_conf");
 
     ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
-    ucscf = (uc_srv_conf_t *)ucscfp[confidx];
+    ucscf = (uc_srv_conf_t *)ucscfp[backend];
 
-    ngx_uint_t i, j;
-    ucsrv = (uc_server_t *)ucscf->uc_servers->elts;
-    for (i = 0; i < ucscf->uc_servers->nelts; i++)
+    switch (method)
     {
+    case UC_POST_METHOD_UPDATE:
+        ucscf->ip_hash = ucscf->temp_conf->ip_hash;
+
+        if (ucscf->temp_conf->ip_hash)
+        {
+            ucscf->upstream->flags = NGX_HTTP_UPSTREAM_CREATE
+                                     | NGX_HTTP_UPSTREAM_WEIGHT
+                                     | NGX_HTTP_UPSTREAM_MAX_FAILS
+                                     | NGX_HTTP_UPSTREAM_FAIL_TIMEOUT
+                                     | NGX_HTTP_UPSTREAM_DOWN;
+        }
+
+        //modify init peer handler
+        uc_reset_peer_init_handler(ucscf->temp_conf->ip_hash, ucscf->temp_conf->keepalive, ucscf);
+
+        //modify cache setting
+        uc_reset_keepalive_cache(ucscf->temp_conf->keepalive, ucscf, log);
+        ucscf->keepalive = ucscf->temp_conf->keepalive;
+
+        break;
+    case UC_POST_METHOD_EDIT:
+    {
+        ngx_uint_t  j;
+        ngx_int_t is_weight_diff, is_backup_diff;
+        is_weight_diff = 0;
+        is_backup_diff = 0;
+
+        ucsrv = (uc_server_t *)ucscf->uc_servers->elts;
 
         //modify server
-        ucsrv[i].server->weight = ucscf->temp_conf->server[i].server.weight;
-        ucsrv[i].server->max_fails = ucscf->temp_conf->server[i].server.max_fails;
-        ucsrv[i].server->fail_timeout = ucscf->temp_conf->server[i].server.fail_timeout;
-        ucsrv[i].server->down = ucscf->temp_conf->server[i].server.down;
+        if (ucsrv[server].server->weight != ucscf->temp_conf->server[server].server.weight)
+        {
+            ucsrv[server].server->weight = ucscf->temp_conf->server[server].server.weight;
+            is_weight_diff = 1;
+        }
+
+        ucsrv[server].server->max_fails = ucscf->temp_conf->server[server].server.max_fails;
+        ucsrv[server].server->fail_timeout = ucscf->temp_conf->server[server].server.fail_timeout;
 
         //modify peer
-        for (j = 0; j < ucsrv[i].server->naddrs; j++)
+        for (j = 0; j < ucsrv[server].server->naddrs; j++)
         {
-            ucsrv[i].running_server[j]->weight = ucscf->temp_conf->server[i].server.weight;
-            ucsrv[i].running_server[j]->max_fails = ucscf->temp_conf->server[i].server.max_fails;
-            ucsrv[i].running_server[j]->fail_timeout = ucscf->temp_conf->server[i].server.fail_timeout;
-            ucsrv[i].running_server[j]->down = ucscf->temp_conf->server[i].server.down;
+            ucsrv[server].running_server[j]->weight = ucscf->temp_conf->server[server].server.weight;
+            ucsrv[server].running_server[j]->max_fails = ucscf->temp_conf->server[server].server.max_fails;
+            ucsrv[server].running_server[j]->fail_timeout = ucscf->temp_conf->server[server].server.fail_timeout;
         }
 
         //modify backup
-        if (ucsrv[i].server->backup != ucscf->temp_conf->server[i].server.backup)
+        if (ucsrv[server].server->backup != ucscf->temp_conf->server[server].server.backup)
         {
-            if (uc_backup_peers_switch(ucsrv[i].server, ucsrv[i].running_server, (ngx_http_upstream_rr_peers_t *)ucscf->upstream->peer.data, ucscf->uc_servers->pool) == -1)
+            if (uc_backup_peers_switch(ucsrv[server].server, ucsrv[server].running_server, (ngx_http_upstream_rr_peers_t *)ucscf->upstream->peer.data, ucscf->uc_servers->pool) == -1)
             {
                 ngx_log_error(NGX_LOG_ALERT, log, 0, "an error occur when switch backup");
             }
-            ucsrv[i].server->backup = ucscf->temp_conf->server[i].server.backup;
+            ucsrv[server].server->backup = ucscf->temp_conf->server[server].server.backup;
+            is_backup_diff = 1;
         }
 
+        //modify peers
+        if (is_weight_diff || is_backup_diff)
+        {
+            uc_reset_peers_data(ucscf);
+        }
     }
 
-    //modify peers
-    uc_reset_peers_data(ucscf);
-
-    ucscf->ip_hash = ucscf->temp_conf->ip_hash;
-
-    if (ucscf->temp_conf->ip_hash)
+    break;
+    case UC_POST_METHOD_ENABLE:
     {
-        ucscf->upstream->flags = NGX_HTTP_UPSTREAM_CREATE
-                                 | NGX_HTTP_UPSTREAM_WEIGHT
-                                 | NGX_HTTP_UPSTREAM_MAX_FAILS
-                                 | NGX_HTTP_UPSTREAM_FAIL_TIMEOUT
-                                 | NGX_HTTP_UPSTREAM_DOWN;
+        ngx_uint_t j;
+        ucsrv = (uc_server_t *)ucscf->uc_servers->elts;
+
+        //modify server
+        ucsrv[server].server->down = ucscf->temp_conf->server[server].server.down;
+        //modify peer
+        for (j = 0; j < ucsrv[server].server->naddrs; j++)
+        {
+            ucsrv[server].running_server[j]->down = ucscf->temp_conf->server[server].server.down;
+        }
     }
-
-    //modify init peer handler
-    uc_reset_peer_init_handler(ucscf->temp_conf->ip_hash, ucscf->temp_conf->keepalive, ucscf);
-
-    //modify cache setting
-    uc_reset_keepalive_cache(ucscf->temp_conf->keepalive, ucscf, log);
-    ucscf->keepalive = ucscf->temp_conf->keepalive;
+    break;
+    default:
+        ngx_log_error(NGX_LOG_ALERT, log, 0, "can't recognize post method");
+        return -1;
+    }
 
     return 0;
 }
@@ -3163,7 +3299,6 @@ uc_reset_peers_data(uc_srv_conf_t *ucscf)
     wb = 0;
     for (i = 0; i < ucscf->uc_servers->nelts; i++)
     {
-
         if (ucsrv[i].server->backup)
         {
             nb += ucsrv[i].server->naddrs;
