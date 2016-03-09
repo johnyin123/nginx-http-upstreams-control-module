@@ -26,8 +26,8 @@ You can view http upstream configuration and statistical upstream service reques
 1. Compile nginx (version:nginx-1.9.8) with this ./configure option:     
 
        --add-module=path/to/src/directory   
-       --with-cc-opt="-I /usr/include/lua5.3"   
-       --with-ld-opt="-l lua5.3 -L /usr/lib/i386-linux-gnu"    
+       --with-cc-opt="-I /usr/include/lua5.2"   
+       --with-ld-opt="-l lua5.2 -L /usr/lib/i386-linux-gnu"    
 
 2. 将html目录下的所有东西拷贝到nginx的html目录。  
 2. Copy the "html" directory's all things to nginx "html" directory.
