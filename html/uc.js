@@ -4,103 +4,176 @@ QQ:1610153337
 email:15817409379@163.com
  */
 
-function readitem(server, item)
+$(".update_btn").click(function ()
 {
-    var server_item_obj = $("#" + server + "\\[" + item + "\\]"); //commit obj
-    var server_item = $("#m_" + item).val(server_item_obj.val());
-}
+    var $backend = $(this).parents("form");
+    var $dlg = $("#suredlg");
 
-function updateitem(server, item)
-{
-    var server_item_obj = $("#" + server + "\\[" + item + "\\]"); //commit obj
-    var server_item_display = server_item_obj.parents("td").first().find("span"); //display obj
-    var server_item = $("#m_" + item).val();
-    
-    if (server_item != server_item_display.attr('run'))
+    var $iphash = $backend.find(".uc_iphash");
+    var iphash = 0;
+    if ($iphash.get(0).checked)
     {
-        server_item_display.attr('style', 'color:red');
+        iphash = 1;
     }
-    else
-    {
-        server_item_display.attr('style', 'color:green');
-    }
-    server_item_display.text(server_item);
-    server_item_obj.val(server_item);
+    var keepalive = $backend.find("select").val();
+
+    $dlg.attr("m", "update");
+    $dlg.attr("b", $backend.attr('v'));
+    $dlg.attr('i', iphash);
+    $dlg.attr('k', keepalive);
+
+    $("#suredlg").modal("show");
+
 }
+);
 
 $('#editdlg').on('show.bs.modal', function (event)
 {
-    
-    var button = $(event.relatedTarget);
-    var server = button.data('whatever');
-    server = server.replace(/[\[]/g, "\\[");
-    server = server.replace(/[\]]/g, "\\]");
-    
-    var server_name = $("#" + server + "\\[name\\]").val();
+
+    var $button = $(event.relatedTarget);
+    var $server_row = $button.parents("tr").first();
+
+    var server = $server_row.attr("v");
+    var backend = $button.parents("form").first().attr("v");
+
+    var server_name = $server_row.find(".uc_server").text();
+
     var modal = $(this);
-    modal.attr('datakey', server);
+
     modal.find('.modal-title').text('Edit Server: ' + server_name);
     modal.find('#m_server').text('Edit Server: ' + server_name);
-    
-    readitem(server, 'weight');
-    readitem(server, 'backup');
-    readitem(server, 'max_fails');
-    readitem(server, 'fail_timeout');
-    
+
+    $("#m_server").val($server_row.find(".uc_server").text());
+    $("#m_weight").val($server_row.find(".uc_weight").text());
+    $("#m_backup").val($server_row.find(".uc_backup").attr('v'));
+    $("#m_max_fails").val($server_row.find(".uc_max_fails").text());
+    $("#m_fail_timeout").val($server_row.find(".uc_fail_timeout").text());
+
+    var $suredlg = $("#suredlg");
+    $suredlg.attr('b', backend);
+    $suredlg.attr('s', server);
+    $suredlg.attr('m', "edit");
 }
 );
 
-$(".modal-footer>button").click(function ()
+$("#edit_btn").click(function ()
 {
-    
-    var server = $("#editdlg").attr('datakey');
-    
-    updateitem(server, "weight");
-    updateitem(server, "backup");
-    updateitem(server, "max_fails");
-    updateitem(server, "fail_timeout");
-    
     $("#editdlg").modal("hide");
-    
+    $("#suredlg").modal("show");
 }
 );
 
-$(".switch-status").click(function ()
+$(".enable_btn").click(function ()
 {
-    
-    var btn = $(this);
-    var status = btn.parents("tr").first().find(".status");
-    var statusspan = status.find("span");
-    var statusinput = status.find("input");
-    
-    if (btn.text() == "disable")
+    var $backend = $(this).parents("form");
+    var $server_row = $(this).parents("tr");
+
+    var $dlg = $("#suredlg");
+
+    var $btn = $(this);
+
+    $dlg.attr("m", "enable");
+    $dlg.attr("b", $backend.attr('v'));
+    $dlg.attr("s", $server_row.attr('v'));
+
+    if ($btn.text() == "disable")
     {
-        statusspan.text("Down");
-        statusinput.val("Down");
-        if (statusspan.attr("run") == "Down")
-        {
-            statusspan.attr("style", "color:green");
-        }
-        else
-        {
-            statusspan.attr("style", "color:red");
-        }
-        btn.text("enable");
+        $dlg.attr('d', 1);
     }
-    else if (btn.text() == "enable")
+    else if ($btn.text() == "enable")
     {
-        statusspan.text("Normal");
-        statusinput.val("Normal");
-        if (statusspan.attr("run") == "Normal")
-        {
-            statusspan.attr("style", "color:green");
-        }
-        else
-        {
-            statusspan.attr("style", "color:red");
-        }
-        
-        btn.text("disable");
+        $dlg.attr('d', 0);
     }
+    $dlg.modal("show");
+
+}
+);
+
+$("#sure_btn").click(function ()
+{
+    var $dlg = $("#suredlg");
+    var method = $dlg.attr("m");
+
+    $dlg.modal("hide");
+
+    var data = {};
+
+    switch (method)
+    {
+    case "update":
+        data.method = "update";
+        data.backend = $dlg.attr("b");
+        data.ip_hash = $dlg.attr("i");
+        data.keepalive = $dlg.attr("k");
+        $.post("upstreams_update", data, function (result)
+        {
+            var response = $.parseJSON(result);
+            if (response.code == 0)
+            {
+                alert(response.message);
+                window.location.href = "/upstreams";
+            }
+            else
+            {
+                alert(response.message);
+            }
+
+        }
+        );
+        break;
+
+    case "edit":
+        data.method = "edit";
+        data.backend = $dlg.attr("b");
+        data.server = $dlg.attr("s");
+        data.weight = $("#m_weight").val();
+        data.backup = $("#m_backup").val();
+        data.max_fails = $("#m_max_fails").val();
+        data.fail_timeout = $("#m_fail_timeout").val();
+
+        $.post("/upstreams_edit", data, function (result)
+        {
+            var response = $.parseJSON(result);
+            if (response.code == 0)
+            {
+                alert(response.message);
+                window.location.href = "/upstreams";
+            }
+            else
+            {
+                alert(response.message);
+            }
+
+        }
+        );
+        break;
+    case "enable":
+        data.method = "enable";
+        data.backend = $dlg.attr("b");
+        data.server = $dlg.attr("s");
+        data.down = $dlg.attr("d");
+        $.post("/upstreams_enable", data, function (result)
+        {
+            var response = $.parseJSON(result);
+            if (response.code == 0)
+            {
+                alert(response.message);
+                window.location.href = "/upstreams";
+            }
+            else
+            {
+                alert(response.message);
+            }
+
+        }
+        );
+        break;
+    default:
+        alert("Unknown method.");
+        break;
+    }
+
+    return false;
+
 }
 );

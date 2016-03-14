@@ -46,6 +46,8 @@
 #define UI_STATUS_POST_SRV_BUSY           4
 #define UI_STATUS_POST_PARA_ERR           5
 
+#define UC_INVALID_PARA_VAL               -1
+
 #ifndef NGX_RWLOCK_WLOCK
 #define NGX_RWLOCK_WLOCK  ((ngx_atomic_uint_t) -1)
 #endif
@@ -58,8 +60,7 @@
 #define uc_unlock(lock)   *(lock) = 0
 
 #define uc_get_lua_call_write_html() &uc_lua_calls[0]
-#define uc_get_lua_call_decode_json() &uc_lua_calls[1]
-#define uc_get_lua_call_encode_json() &uc_lua_calls[2]
+#define uc_get_lua_call_encode_json() &uc_lua_calls[1]
 
 ///////////////// type defines ////////////////////////////////////////////
 typedef enum
@@ -89,7 +90,7 @@ typedef struct   /* copy from ngx_process.c */
 
 } ngx_signal_t;
 
-typedef struct  /* copy from ngx_http_upstream_keepalive_module */
+typedef struct   /* copy from ngx_http_upstream_keepalive_module */
 {
     ngx_uint_t                         max_cached;
 
@@ -102,7 +103,7 @@ typedef struct  /* copy from ngx_http_upstream_keepalive_module */
 } ngx_http_upstream_keepalive_srv_conf_t;
 
 
-typedef struct  /* copy from ngx_http_upstream_keepalive_module */
+typedef struct   /* copy from ngx_http_upstream_keepalive_module */
 {
     ngx_http_upstream_keepalive_srv_conf_t  *conf;
 
@@ -115,7 +116,7 @@ typedef struct  /* copy from ngx_http_upstream_keepalive_module */
 } ngx_http_upstream_keepalive_cache_t;
 
 
-typedef struct  /* post request parameters */
+typedef struct   /* post request parameters */
 {
     uc_post_method_e method;
 
@@ -278,7 +279,7 @@ typedef struct
 
 } uc_post_status_t;
 
-typedef struct /* used to share memory zone */
+typedef struct   /* used to share memory zone */
 {
     ngx_atomic_t                   post_lock;      //post request process lock
 
@@ -311,6 +312,12 @@ typedef struct
 
 } uc_rcount_key_t;
 
+typedef struct uc_node_s
+{
+    char *name;
+    char *value;
+    struct uc_node_s *next;
+} uc_node_t;
 
 ////////////////// function declarations /////////////////////////
 
@@ -363,7 +370,6 @@ static void uc_get_post_status(uc_post_status_t *post_status);
 static ngx_int_t uc_new_post_id();
 static ngx_pid_t uc_get_post_process();
 static ngx_atomic_t *uc_get_post_lock();
-//static ngx_uint_t uc_get_syn_conf();
 
 //request count functions
 static void uc_sig_rcount_write_handler(int signo, siginfo_t *sig_info, void *unused);
@@ -374,16 +380,17 @@ static ngx_uint_t uc_get_rcount(ngx_uint_t group, ngx_uint_t server);
 static void uc_post_request_handler(ngx_http_request_t *r);
 static ngx_int_t uc_request_handler(ngx_http_request_t *r);
 
-//response output functions
+//io functions
 static ngx_int_t uc_response_text(ngx_http_request_t *r, ngx_int_t flag);
+static ngx_int_t uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_post_para_t **parap);
+static ngx_int_t uc_para_assign(uc_post_para_t *para, char *name, char *value, ngx_pool_t *pool);
+static char uc_hex_trans(char ch);
 
 //lua functions
 static ngx_int_t uc_lua_call(uc_lua_call_t *c);
 static ngx_int_t uc_lua_create_para_for_write_html(lua_State *L, uc_lua_call_t *c);
-static ngx_int_t uc_lua_create_para_for_decode_json(lua_State *L, uc_lua_call_t *c);
 static ngx_int_t uc_lua_create_para_for_encode_json(lua_State *L, uc_lua_call_t *c);
 static ngx_int_t uc_lua_get_rtn_from_write_html(lua_State *L, uc_lua_call_t *c);
-static ngx_int_t uc_lua_get_rtn_from_decode_json(lua_State *L, uc_lua_call_t *c);
 static ngx_int_t uc_lua_get_rtn_from_encode_json(lua_State *L, uc_lua_call_t *c);
 
 //time functions
@@ -394,7 +401,6 @@ static ngx_int_t uc_get_update_days();
 //utils functions
 static uc_srv_conf_t *uc_get_srv_conf_byhost(uc_main_conf_t *ucmcf, ngx_str_t *host);
 static uc_srv_conf_t *uc_get_srv_conf_byidx(ngx_uint_t confidx);
-//static ngx_int_t uc_get_srv_conf_index(uc_main_conf_t *ucmcf, ngx_str_t *host);
 static ngx_int_t uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer);
 static ngx_uint_t uc_queue_move(ngx_queue_t *from, ngx_queue_t *to, ngx_uint_t number);
 
@@ -486,20 +492,7 @@ static uc_lua_call_t uc_lua_calls[] =
         NULL
     },
     {
-        ngx_string("function decode_json(json) "\
-        "local cjson = require 'cjson' "\
-        "return cjson.decode(json) "\
-        "end "),
-        ngx_string("decode_json"),
-        {NULL, 1},
-        {NULL, 1},
-        uc_lua_create_para_for_decode_json,
-        uc_lua_get_rtn_from_decode_json,
-        NULL,
-        NULL
-    },
-    {
-        ngx_string("function decode_json(json) "\
+        ngx_string("function encode_json(json) "\
         "local cjson = require 'cjson' "\
         "return cjson.encode(json) "\
         "end "),
@@ -719,86 +712,273 @@ uc_lua_get_rtn_from_write_html(lua_State *L, uc_lua_call_t *c)
     return 0;
 }
 
+
 static ngx_int_t
-uc_lua_create_para_for_decode_json(lua_State *L, uc_lua_call_t *call)
+uc_para_assign(uc_post_para_t *para, char *name, char *value, ngx_pool_t *pool)
 {
-    char *start, *b;
+
+    if(strlen(name) == 0) return 0;
+    if(strcmp(name, "method") == 0)
+    {
+        if((ngx_int_t)para->method == UC_INVALID_PARA_VAL)
+        {
+            if (strcmp(value, "update") == 0)
+            {
+                para->method = UC_POST_METHOD_UPDATE;
+            }
+            else if (strcmp(value, "edit") == 0)
+            {
+                para->method = UC_POST_METHOD_EDIT;
+            }
+            else if (strcmp(value, "enable") == 0)
+            {
+                para->method = UC_POST_METHOD_ENABLE;
+            }
+            else
+            {
+                ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                              "unknown method");
+                return -1;
+            }
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of method");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "backend") == 0)
+    {
+        if(para->backend == UC_INVALID_PARA_VAL)
+        {
+            para->backend = ngx_atoi((u_char *)value, strlen(value));
+
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of backend");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "server") == 0)
+    {
+        if(para->server == UC_INVALID_PARA_VAL)
+        {
+            para->server = ngx_atoi((u_char *)value, strlen(value));
+
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of server");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "ip_hash") == 0)
+    {
+        if(para->ip_hash == UC_INVALID_PARA_VAL)
+        {
+            para->ip_hash = ngx_atoi((u_char *)value, strlen(value));
+
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of ip_hash");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "keepalive") == 0)
+    {
+        if(para->keepalive == UC_INVALID_PARA_VAL)
+        {
+            para->keepalive = ngx_atoi((u_char *)value, strlen(value));
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of keepalive");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "weight") == 0)
+    {
+        if(para->weight == UC_INVALID_PARA_VAL)
+        {
+            para->weight = ngx_atoi((u_char *)value, strlen(value));
+        }
+    }
+    else if(strcmp(name, "backup") == 0)
+    {
+        if(para->backup == UC_INVALID_PARA_VAL)
+        {
+            para->backup = ngx_atoi((u_char *)value, strlen(value));
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of backup");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "max_fails") == 0)
+    {
+        if(para->max_fails == UC_INVALID_PARA_VAL)
+        {
+            para->max_fails = ngx_atoi((u_char *)value, strlen(value));
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of max_fails");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "fail_timeout") == 0)
+    {
+        if(para->fail_timeout == UC_INVALID_PARA_VAL)
+        {
+            para->fail_timeout = ngx_atoi((u_char *)value, strlen(value));
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of fail_timeout");
+            return -1;
+        }
+    }
+    else if(strcmp(name, "down") == 0)
+    {
+        if(para->down == UC_INVALID_PARA_VAL)
+        {
+            para->down = ngx_atoi((u_char *)value, strlen(value));
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                          "too many parameter of down");
+            return -1;
+        }
+    }
+    else
+    {
+        ngx_log_error(NGX_LOG_ERR, pool->log, 0,
+                      "unknown para:%s", name);
+        return -1;
+    }
+
+    return 0;
+
+}
+
+static ngx_int_t
+uc_parse_post_para(ngx_chain_t *postbufs, ngx_pool_t *pool, uc_post_para_t **parap)
+{
+    char *start, *end, *b, *token;
     ngx_chain_t *c;
+    uc_node_t *head, *iter;
     ngx_uint_t blen;
+    uc_post_para_t *para;
 
-    //compute post parameter string's total length
-
-    c = (ngx_chain_t *)call->call_para.data;
+    c = postbufs;
     blen = 0;
-    while (c != 0)
+    while(c != 0)
     {
         blen += (c->buf->last - c->buf->pos);
         c = c->next;
     }
-
-    //copy chain's content to single buffer
-    start = (char *)ngx_pcalloc(call->pool, blen);
-    if (start == NULL)
-    {
-        ngx_log_error(NGX_LOG_ALERT, call->pool->log, 0,
-                      "faile to alloc buffer when copy chain content");
-        return 1;
-    }
+    start = (char *)ngx_pcalloc(pool, blen + 1);
+    end = start + blen;
 
     b = start;
-    c = (ngx_chain_t *)call->call_para.data;
-    while (c != 0)
+    c = postbufs;
+    while(c != 0)
     {
         ngx_memcpy(b, c->buf->pos, c->buf->last - c->buf->pos);
         b = b + (c->buf->last - c->buf->pos);
         c = c->next;
     }
 
-    lua_pushlstring(L, start, blen);
-    return 0;
-}
 
-static ngx_int_t
-uc_lua_get_rtn_from_decode_json(lua_State *L, uc_lua_call_t *call)
-{
-    uc_post_para_t *para;
-    const char *method;
-    para = (uc_post_para_t *)call->call_rtn.data;
+    head = ngx_pcalloc(pool, sizeof(uc_node_t));
+    iter = head;
 
-    lua_pushstring(L, "method");
-    lua_gettable(L, -2);
-    method = (const char *)lua_tostring(L, -1);
-    //verify method
-    if (strcmp(method, "update") == 0)
-    {
-        para->method = UC_POST_METHOD_UPDATE;
-    }
-    else if (strcmp(method, "edit") == 0)
-    {
-        para->method = UC_POST_METHOD_EDIT;
-    }
-    else if (strcmp(method, "enable") == 0)
-    {
-        para->method = UC_POST_METHOD_ENABLE;
-    }
-    else
-    {
-        ngx_log_error(NGX_LOG_ERR, call->log, 0,
-                      "can't recognize the method");
-        lua_pop(L, 1);
-        return -1;
-    }
-    lua_pop(L, 1);
 
-    lua_pushstring(L, "backend");
-    lua_gettable(L, -2);
-    para->backend = lua_tonumber(L, -1);
-    lua_pop(L, 1);
+    b = start;
+    token = start;
+    iter -> name = token;
+
+
+    while (1)
+    {
+        if(b == end)
+        {
+            *token = 0;
+            break;
+        }
+        if (*b == '=')
+        {
+            *token = 0;
+            iter->value = token + 1;
+        }
+        else if (*b == '+')
+        {
+            *token = ' ';
+        }
+        else if (*b == '%')
+        {
+            *token = uc_hex_trans(*(b + 1)) * 16 + uc_hex_trans(*(b + 2));
+            b += 2;
+        }
+        else if (*b == '&')
+        {
+            *token = 0;
+            iter->next = ngx_pcalloc(pool, sizeof(uc_node_t));
+            iter = iter->next;
+            iter->name = token + 1;
+        }
+        else
+        {
+
+            *token = *b;
+        }
+
+        b++;
+        token++;
+    }
+
+
+    para = ngx_pcalloc(pool, sizeof(uc_post_para_t));
+
+    para->method = UC_INVALID_PARA_VAL;
+    para->backend = UC_INVALID_PARA_VAL;
+    para->server = UC_INVALID_PARA_VAL;
+    para->ip_hash = UC_INVALID_PARA_VAL;
+    para->keepalive = UC_INVALID_PARA_VAL;
+    para->weight = UC_INVALID_PARA_VAL;
+    para->backup = UC_INVALID_PARA_VAL;
+    para->max_fails = UC_INVALID_PARA_VAL;
+    para->fail_timeout = UC_INVALID_PARA_VAL;
+    para->down = UC_INVALID_PARA_VAL;
+
+    iter = head;
+
+    while(iter != 0)
+    {
+        if(uc_para_assign(para, iter->name, iter->value, pool) != 0)
+        {
+            return -1;
+        }
+        iter = iter->next;
+    }
 
     //verify backend
-    if ((ngx_uint_t)para->backend >= sucmcf->upstreams.nelts)
+    if (((ngx_uint_t)para->backend >= sucmcf->upstreams.nelts) ||
+            (para->backend < 0))
     {
-        ngx_log_error(NGX_LOG_ERR, call->log, 0,
+        ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                       "backend parameter is invalid");
         return -1;
     }
@@ -806,133 +986,107 @@ uc_lua_get_rtn_from_decode_json(lua_State *L, uc_lua_call_t *call)
     uc_srv_conf_t *ucscf, **ucscfp;
     ucscfp = (uc_srv_conf_t **)sucmcf->upstreams.elts;
     ucscf = (uc_srv_conf_t *)ucscfp[para->backend];
+
     switch (para->method)
     {
     case UC_POST_METHOD_UPDATE:
-
-        lua_pushstring(L, "ip_hash");
-        lua_gettable(L, -2);
-        para->ip_hash = lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify ip_hash
         if (para->ip_hash != 0 && para->ip_hash != 1)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "ip_hash parameter is invalid");
             return -1;
         }
-
-
-        lua_pushstring(L, "keepalive");
-        lua_gettable(L, -2);
-        para->keepalive = lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify keepalive
         if (para->keepalive < 0)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "keepalive parameter is invalid");
             return -1;
         }
         break;
     case UC_POST_METHOD_EDIT:
-        lua_pushstring(L, "server");
-        lua_gettable(L, -2);
-        para->server = lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify server
 
         if ((ngx_uint_t)para->server >= ucscf->uc_servers->nelts)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "server parameter is invalid");
             return -1;
         }
-
-        lua_pushstring(L, "weight");
-        lua_gettable(L, -2);
-        para->weight = (int)lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify weight;
         if (para->weight <= 0)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "weight parameter is invalid");
             return -1;
         }
 
-        lua_pushstring(L, "backup");
-        lua_gettable(L, -2);
-        para->backup = (int)lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify backup
         if (para->backup != 0 && para->backup != 1)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "backup parameter is invalid");
             return -1;
         }
 
-        lua_pushstring(L, "max_fails");
-        lua_gettable(L, -2);
-        para->max_fails = (int)lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify max_fails
         if (para->max_fails < 0)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "max_fails parameter is invalid");
             return -1;
         }
 
-        lua_pushstring(L, "fail_timeout");
-        lua_gettable(L, -2);
-        para->fail_timeout = (int)lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify fail_timeout
         if (para->fail_timeout < 0)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "fail_timeout parameter is invalid");
             return -1;
         }
 
         break;
     case UC_POST_METHOD_ENABLE:
-        lua_pushstring(L, "server");
-        lua_gettable(L, -2);
-        para->server = lua_tonumber(L, -1);
-        lua_pop(L, 1);
         //verify server
         if ((ngx_uint_t)para->server >= ucscf->uc_servers->nelts)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "server parameter is invalid");
             return -1;
         }
 
-        lua_pushstring(L, "down");
-        lua_gettable(L, -2);
-        para->down = (int)lua_tonumber(L, -1);
-        lua_pop(L, 1);
-
         //verify down
         if (para->down != 0 && para->down != 1)
         {
-            ngx_log_error(NGX_LOG_ERR, call->log, 0,
+            ngx_log_error(NGX_LOG_ERR, pool->log, 0,
                           "down parameter is invalid");
             return -1;
         }
         break;
     }
+
+    *parap = para;
+
     return 0;
+}
+
+char uc_hex_trans(char ch)
+{
+    char c;
+    if (ch < 'A')
+    {
+        c = ch - 48;
+    }
+    else if (ch < 'a')
+    {
+        c = ch - 55;
+    }
+    else
+    {
+        c = ch - 87;
+    }
+    return c;
 }
 
 
@@ -944,7 +1098,6 @@ uc_lua_create_para_for_encode_json(lua_State *L, uc_lua_call_t *call)
     resp = (uc_post_resp_t *)call->call_para.data;
 
     lua_newtable(L);
-
     lua_pushstring(L, "code");
     lua_pushnumber(L, resp->code);
     lua_settable(L, -3);
@@ -953,16 +1106,17 @@ uc_lua_create_para_for_encode_json(lua_State *L, uc_lua_call_t *call)
     lua_pushlstring(L, (const char *)resp->message.data, resp->message.len);
     lua_settable(L, -3);
 
-
-    lua_settable(L, -3);
     return 0;
 }
 
 static ngx_int_t
 uc_lua_get_rtn_from_encode_json(lua_State *L, uc_lua_call_t *call)
 {
-    call->call_rtn.data = (char *)lua_tostring(L, -1);
+    uc_str_t *rtn;
+    rtn = (uc_str_t *)call->call_rtn.data;
 
+    rtn->data = lua_tostring(L, -1);
+    rtn->len = luaL_len(L, -1);
     return 0;
 }
 
@@ -994,6 +1148,7 @@ uc_lua_call(uc_lua_call_t *c)
         return 2;  //load problem
 
     }
+
     lua_getglobal(L, (const char *)c->call_name.data);
     if (c->call_para_handler(L, c) != 0)
     {
@@ -1002,6 +1157,7 @@ uc_lua_call(uc_lua_call_t *c)
         lua_close(L);
         return 3; //para problem
     }
+
     if(lua_pcall(L, c->call_para.num, c->call_rtn.num, 0) != 0)
     {
         ngx_log_error(NGX_LOG_ERR, c->log, 0,
@@ -1040,6 +1196,7 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
 
     if (r->method & NGX_HTTP_POST)
     {
+
         call = uc_get_lua_call_encode_json();
         resp = ngx_pcalloc(r->pool, sizeof(uc_post_resp_t));
 
@@ -1079,6 +1236,7 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
             resp->code = 5;
             ngx_str_set(&resp->message, "An unknown error occurs in server.");
         }
+        call->call_para.data = resp;
 
     }
     else
@@ -1087,6 +1245,7 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
         call->pool = r->pool;
 
     }
+
     call->call_rtn.data = ngx_pcalloc(r->pool, sizeof(uc_str_t));
 
     if (call->call_rtn.data == NULL)
@@ -1173,37 +1332,25 @@ uc_post_request_handler(ngx_http_request_t *r)
         return;
     }
 
-    uc_lua_call_t *call;
+
     uc_post_para_t *para;
+    para = 0;
+    uc_parse_post_para(r->request_body->bufs, r->pool, &para);
 
-    call = uc_get_lua_call_decode_json();
-    call->call_para.data = r->request_body->bufs;
-
-    call->call_rtn.data = ngx_pcalloc(r->pool, sizeof(uc_post_para_t));
-
-    if (call->call_rtn.data == NULL)
+    if(para == 0)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "failed to allocate post parameter space.");
-        uc_response_text(r, UI_STATUS_POST_SRV_ERR);
-        ngx_http_finalize_request(r, NGX_OK);
-        uc_unlock(uc_get_post_lock());
-        return;
-    }
-    call->log = r->connection->log;
 
-    if (uc_lua_call(call) != 0)
-    {
-
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "failed to decode post parameter");
+
         uc_response_text(r, UI_STATUS_POST_PARA_ERR);
+
         ngx_http_finalize_request(r, NGX_OK);
+
         uc_unlock(uc_get_post_lock());
+
         return;
     }
-
-    para = (uc_post_para_t *)call->call_rtn.data;
 
     ngx_int_t post_id;
     post_id = uc_new_post_id();
@@ -1239,7 +1386,6 @@ uc_post_request_handler(ngx_http_request_t *r)
 static ngx_int_t
 uc_request_handler(ngx_http_request_t *r)
 {
-
     if (r->method & NGX_HTTP_POST)
     {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0,
@@ -3071,8 +3217,8 @@ uc_upload_data_to_shzone(uc_post_para_t *para)
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
-                   "uc_upload_data_to_shzone");
+    ngx_log_debug1(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
+                   "uc_upload_data_to_shzone:%d", para->method);
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
