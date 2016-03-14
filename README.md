@@ -1,16 +1,4 @@
-#这是一个新分支
-##使用新的用例场景开发
-1. 点击ip_hash 和 keepalive 旁的update按钮更新对应后端的的upstream转发方式，即时生效
-2. 点击server行的edit按钮更新server的运行参数，即时生效
-3. 点击server行的enable/disable按钮更新启动或停止对应服务，即时生效
-
-##更进一步
-* 将ui界面元素配置化，使用户可自定义界面
-  
-  
----------------------  
-
-  
+ 
 #基于web的 nginx upstream 监控和管理模块
 #nginx http upstreams control module  
 本模块是为监视和控制nginx的upstream配置而写的nginx模块。  
@@ -22,15 +10,21 @@ You can view http upstream configuration and statistical upstream service reques
  
 #安装
 #Install
-1. 用下面的./configure配置项编译nginx（版本：nginx-1.9.8）：  
-1. Compile nginx (version:nginx-1.9.8) with this ./configure option:     
+* 安装模块依赖项：lua5.2 和 lua-cjson
+* Install dependencies for this module    
+       lua5.2  
+       lua-cjson  
+  
+  
+* 用下面的./configure配置项编译nginx（版本：nginx-1.9.8）：  
+* Compile nginx (version:nginx-1.9.8) with this ./configure option:     
 
        --add-module=path/to/src/directory   
        --with-cc-opt="-I /usr/include/lua5.2"   
        --with-ld-opt="-l lua5.2 -L /usr/lib/i386-linux-gnu"    
 
-2. 将html目录下的所有东西拷贝到nginx的html目录。  
-2. Copy the "html" directory's all things to nginx "html" directory.
+* 将html目录下的所有东西拷贝到nginx的html目录。  
+* Copy the "html" directory's all things to nginx "html" directory.
 
 #配置
 #Config 
@@ -70,53 +64,53 @@ You can view http upstream configuration and statistical upstream service reques
 
    * Keepalive，Ip hash更新接口(waiting...)  
    (AJAX) POST /upstreams_update  
-     post parameter:  
-     {
-       method:'update',
-       backend:'?',
-       ip_hash:?,
-       keepalive:?
+     post parameter:    
+     {  
+       method:'update',  
+       backend:?(backend index that begin with 0),  
+       ip_hash:?(0/1),  
+       keepalive:?(unsigned integer)    
+     }    
+     response:  
+     {  
+        code:?(0,1,2,3,4,5),  
+        message:'?'   
      }  
-     response:
-     {
-        code:?
-        message:?
-     }
     
 
    * upstream 服务器参数编辑接口(waiting...)    
-   (AJAX) POST /upstreams_edit  
-     post parameter:    
-     {
-        method:'edit',
-        backend:'?',
-        server:'?',
-        weight:?,
-        backup:?
-        max_fails:?,
-        fail_timeout:?
-     }  
-     response:
-     {
-        code:?
-        message:?
-     }
-  
+   (AJAX) POST /upstreams_edit   
+     post parameter:      
+     {   
+        method:'edit',  
+        backend:?(backend index that begin with 0),  
+        server:?(server index that begin with 0),  
+        weight:?(unsigned integer),  
+        backup:?(0/1),  
+        max_fails:?(unsigned integer),  
+        fail_timeout:?(unsigned integer)  
+     }    
+     response:  
+     {   
+        code:?(0,1,2,3,4,5),   
+        message:?  
+     }   
+    
    * upstream 服务器启停接口(waiting...)   
    (AJAX) POST /upstreams_enable   
-     post parameter:   
-     {
-        method:'enable',
-        backend:'?',
-        server:'?',
-        down:? ,
-     }  
-     response:
-     {
-        code:?
-        message:?
-     }
-
+     post parameter:    
+     {   
+        method:'enable',   
+        backend:?(backend index that begin with 0),   
+        server:?(server index that begin with 0),   
+        down:? (0/1),   
+     }    
+     response:   
+     {   
+        code:?(0,1,2,3,4,5),   
+        message:?   
+     }   
+   
 --- 
 
 #关于作者
