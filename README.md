@@ -86,17 +86,17 @@ You can view http upstream configuration and statistical upstream service reques
 
         (AJAX) POST /upstreams_update  
         请求参数：  
-            {  
-                  method:'update',  
-                  backend:?,  
-                  ip_hash:?,  
-                  keepalive:?     
-            }    
+         {  
+            method:'update',  
+            backend:?,  
+            ip_hash:?,  
+            keepalive:?     
+         }    
         响应格式： 
-            {  
-                  code:?,  
-                  message:'?'   
-            }  
+         {  
+            code:?,  
+            message:'?'   
+         }  
 
    说明：  
    请求和响应均为json格式  
