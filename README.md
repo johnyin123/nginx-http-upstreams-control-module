@@ -11,7 +11,8 @@ You can view http upstream configuration and statistical upstream service reques
 #安装
 #Install
 * 安装模块依赖项：lua5.2 和 lua-cjson
-* Install dependencies for this module    
+* Install dependencies for this module  
+  
                               lua5.2  
                               lua-cjson  
   
