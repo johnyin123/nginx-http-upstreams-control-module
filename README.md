@@ -13,8 +13,8 @@ You can view http upstream configuration and statistical upstream service reques
 * 安装模块依赖项：lua5.2 和 lua-cjson
 * Install dependencies for this module  
   
-                              lua5.2  
-                              lua-cjson  
+         lua5.2  
+         lua-cjson  
   
   
 * 用下面的./configure配置项编译nginx（版本：nginx-1.9.8）：  
@@ -54,6 +54,7 @@ You can view http upstream configuration and statistical upstream service reques
 
 #配置指令
    * upstreams_admin
+
         开启或关闭upstream的监控功能,开启设置此值为on,关闭设置此值为off
         举例：upstreams_admin on
    * auth_basic  
