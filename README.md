@@ -73,7 +73,7 @@ You can view http upstream configuration and statistical upstream service reques
         举例：timeout 5
 
 #API
-   * 配置查询   
+   * 配置查询接口   
  
         GET /upstreams   
         通过web客户访问   
@@ -83,7 +83,7 @@ You can view http upstream configuration and statistical upstream service reques
         (lua) write_html(data)    
         在nginx服务端回调   
 
-   * Keepalive，Ip hash更新  
+   * Keepalive，Ip hash更新接口  
 
         (AJAX) POST /upstreams_update   
         请求参数：  
@@ -170,7 +170,7 @@ You can view http upstream configuration and statistical upstream service reques
     
    * upstream 服务器启停接口  
  
-       (AJAX) POST /upstreams_enable   
+        (AJAX) POST /upstreams_enable   
        请求参数:    
         {   
            method:'enable',   
