@@ -1960,25 +1960,6 @@ uc_get_srv_conf_byidx(ngx_uint_t confidx)
     return (uc_srv_conf_t *)ucscfp[confidx];
 }
 
-/*static ngx_int_t
-uc_get_srv_conf_index(uc_main_conf_t *ucmcf, ngx_str_t *host)
-{
-    uc_srv_conf_t *ucscf, **ucscfp;
-    ngx_uint_t    i;
-
-    ucscfp = ucmcf->upstreams.elts;
-    for (i = 0; i < ucmcf->upstreams.nelts; i++)
-    {
-        ucscf = ucscfp[i];
-        if ((ucscf->host.len == host->len)
-                && (ngx_strncasecmp(ucscf->host.data, host->data, host->len) == 0))
-        {
-            return i;
-        }
-    }
-
-    return -1;
-}*/
 
 static ngx_int_t
 uc_get_peer_srv_index(ngx_uint_t conf, ngx_str_t *peer)
@@ -3086,21 +3067,6 @@ uc_get_post_process()
 }
 
 
-/*static ngx_uint_t
-uc_get_syn_conf()
-{
-    ngx_slab_pool_t                *shpool;
-    uc_sh_t                        *ucsh;
-    ngx_uint_t                     confidx;
-
-    shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
-    ucsh = (uc_sh_t *)shpool->data;
-    ngx_rwlock_rlock(&ucsh->status_lock);
-    confidx = ucsh->post_status.syn_conf;
-    ngx_rwlock_unlock(&ucsh->status_lock);
-    return confidx;
-}*/
-
 static ngx_int_t
 uc_new_post_id(ngx_int_t code)
 {
@@ -3129,7 +3095,7 @@ uc_get_post_status(uc_post_status_t *post_status)
     post_status->post_id = ucsh->post_status.post_id;
     post_status->status_code = ucsh->post_status.status_code;
     post_status->r = ucsh->post_status.r;
-    //post_status->syn_conf = ucsh->post_status.syn_conf;
+    
     post_status->method = ucsh->post_status.method;
     post_status->backend = ucsh->post_status.backend;
     post_status->server = ucsh->post_status.server;
