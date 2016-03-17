@@ -171,32 +171,32 @@ You can view http upstream configuration and statistical upstream service reques
    * upstream 服务器启停接口  
  
         (AJAX) POST /upstreams_enable   
-       请求参数:    
-        {   
+        请求参数:    
+         {   
            method:'enable',   
            backend:?,   
            server:?,   
            down:?,   
-        }    
-       响应格式:   
-        {   
+         }    
+        响应格式:   
+         {   
            code:?,   
            message:'?'   
-        }   
+         }   
    
-       说明：  
+        说明：  
 
-       请求和响应均为json格式  
+        请求和响应均为json格式  
 
-       method:指明请求的类型，值固定为字符串“enable”，表示启动或停止upstream某个server   
+        method:指明请求的类型，值固定为字符串“enable”，表示启动或停止upstream某个server   
 
-       backend:upstream后端索引（从0开始），该索引与nginx配置文件中的后端从上到下顺序对应  
+        backend:upstream后端索引（从0开始），该索引与nginx配置文件中的后端从上到下顺序对应  
 
-       server:server索引（从0开始），该索引与nginx配置文件中的某一后端的服务器从上到下顺序对应  
+        server:server索引（从0开始），该索引与nginx配置文件中的某一后端的服务器从上到下顺序对应  
 
-       down:表示是否停止服务器，只能取0或1。0为启动，1为停止  
+        down:表示是否停止服务器，只能取0或1。0为启动，1为停止  
 
-       code:返回码  
+        code:返回码  
         0 更新upstream配置成功     
         1 服务器处理超时    
         2 更新出错    
@@ -204,7 +204,7 @@ You can view http upstream configuration and statistical upstream service reques
         4 请求参数错误    
         5 未知错误   
 
-       message:与返回码对应的消息文本
+        message:与返回码对应的消息文本
 
 #自定制UI
 #Customize UI by yourself  
