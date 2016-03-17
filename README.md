@@ -66,7 +66,8 @@ You can view http upstream configuration and statistical upstream service reques
    * ui_lua_file
 
         UI脚本文件路径（lua脚本文件）
-        举例：ui_lua_file /usr/local/nginx/html/ui.lua
+        如果未设置，默认为path/to/nginx/html/ui.lua
+        举例：ui_lua_file /usr/local/nginx/html/myui.lua
    * timeout
 
         更新upstream配置的超时时间（单位：秒）。如果未设置，默认为3秒
