@@ -379,6 +379,7 @@ static ngx_uint_t uc_get_rcount(ngx_uint_t group, ngx_uint_t server);
 //http content handlers
 static void uc_post_request_handler(ngx_http_request_t *r);
 static ngx_int_t uc_request_handler(ngx_http_request_t *r);
+static ngx_uint_t uc_is_ajax_request(ngx_http_request_t *r);
 
 //io functions
 static ngx_int_t uc_response_text(ngx_http_request_t *r, ngx_int_t flag);
@@ -413,6 +414,8 @@ extern ngx_module_t  ngx_http_upstream_keepalive_module;
 extern ngx_uint_t    ngx_process;
 extern ngx_queue_t   ngx_posted_events;
 extern ngx_signal_t  signals[];
+
+static ngx_str_t     uc_ajax_mark[]={ngx_string("X-Requested-With"),ngx_string("XMLHttpRequest")};
 
 static uc_main_conf_t *sucmcf = 0;
 
@@ -1303,11 +1306,59 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
     return ngx_http_output_filter(r, &out);
 }
 
+static ngx_uint_t
+uc_is_ajax_request(ngx_http_request_t *r)
+{
+    ngx_list_part_t  *part;
+    ngx_table_elt_t  *header;
+    ngx_uint_t       i;
+ 
+    part = &r->headers_in.headers.part;
+    header = part->elts;
+
+    for (i = 0; ; i++) {
+
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+
+        if (header[i].hash == 0) {
+            continue;
+        }
+
+        if (header[i].key.len != uc_ajax_mark[0].len) {
+            continue;
+        }
+
+        if (ngx_strncasecmp(header[i].key.data, uc_ajax_mark[0].data, uc_ajax_mark[0].len) == 0) {
+            if((header[i].value.len == uc_ajax_mark[1].len)
+               &&(ngx_strncasecmp(header[i].value.data, uc_ajax_mark[1].data, uc_ajax_mark[1].len) == 0))
+            {
+                 return 1;
+            }else{
+                 return 0;
+            }
+        }
+    }
+    return 0;
+}
 
 static void
 uc_post_request_handler(ngx_http_request_t *r)
 {
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, r->connection->log, 0, "uc_post_request_handler");
+
+    //is this a ajax request?  
+    if(!uc_is_ajax_request(r)){
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return;
+    }
 
     if(!uc_trylock(uc_get_post_lock()))
     {
