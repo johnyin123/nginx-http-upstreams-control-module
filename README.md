@@ -86,7 +86,6 @@ You can view http upstream configuration and statistical upstream service reques
 
         (AJAX) POST /upstreams_update  
         请求参数：  
-
             {  
                   method:'update',  
                   backend:?,  
@@ -94,7 +93,6 @@ You can view http upstream configuration and statistical upstream service reques
                   keepalive:?     
             }    
         响应格式： 
- 
             {  
                   code:?,  
                   message:'?'   
