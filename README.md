@@ -65,7 +65,7 @@ You can view http upstream configuration and statistical upstream service reques
         请参考nginx对应指令说明
    * ui_lua_file
 
-        UI脚本文件路径
+        UI脚本文件路径（lua脚本文件）
         举例：ui_lua_file /usr/local/nginx/html/ui.lua
    * timeout
 
