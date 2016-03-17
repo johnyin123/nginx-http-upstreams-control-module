@@ -58,38 +58,47 @@ You can view http upstream configuration and statistical upstream service reques
         开启或关闭upstream的监控功能,开启设置此值为on,关闭设置此值为off
         举例：upstreams_admin on
    * auth_basic  
+
         请参考nginx对应指令说明
    * auth_basic_user_file
+
         请参考nginx对应指令说明
    * ui_lua_file
+
         UI脚本文件路径
         举例：ui_lua_file /usr/local/nginx/html/ui.lua
    * timeout
+
         更新upstream配置的超时时间（单位：秒）。如果未设置，超时时间默认为3秒
         举例：timeout 5
 #API
-   * 配置查询    
-   GET /upstreams   
-   在web客户端执行   
+   * 配置查询   
+ 
+        GET /upstreams   
+        在web客户端执行   
       
    * UI回调接口    
-   (lua) write_html(data)    
-   在nginx服务端回调   
+
+        (lua) write_html(data)    
+        在nginx服务端回调   
 
    * Keepalive，Ip hash更新  
-   (AJAX) POST /upstreams_update  
-   请求参数：  
-   {  
-        method:'update',  
-        backend:?,  
-        ip_hash:?,  
-        keepalive:?     
-   }    
-   响应格式：  
-   {  
-        code:?,  
-        message:'?'   
-   }  
+
+        (AJAX) POST /upstreams_update  
+        请求参数：  
+
+            {  
+                  method:'update',  
+                  backend:?,  
+                  ip_hash:?,  
+                  keepalive:?     
+            }    
+        响应格式： 
+ 
+            {  
+                  code:?,  
+                  message:'?'   
+            }  
 
    说明：  
    请求和响应均为json格式  
