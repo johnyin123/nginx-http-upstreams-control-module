@@ -166,13 +166,6 @@ struct uc_lua_call_s
 
 typedef struct
 {
-    const char          *data;
-    ngx_int_t           len;
-
-} uc_str_t;
-
-typedef struct
-{
     ngx_http_upstream_server_t  *server;
     ngx_http_upstream_rr_peer_t **running_server;
 
@@ -706,12 +699,22 @@ uc_lua_create_para_for_write_html(lua_State *L, uc_lua_call_t *c)
 static ngx_int_t
 uc_lua_get_rtn_from_write_html(lua_State *L, uc_lua_call_t *c)
 {
-    uc_str_t *rtn;
-    rtn = (uc_str_t *)c->call_rtn.data;
+    ngx_str_t    *rtn;
+    const char   *raw_rtn;
 
-    rtn->data = lua_tostring(L, -1);
-    rtn->len = luaL_len(L, -1);
+    rtn = (ngx_str_t *)c->call_rtn.data;
 
+    raw_rtn = lua_tolstring(L, -1,&rtn->len);
+
+    rtn->data = (u_char *)ngx_palloc(c->pool, rtn->len);
+    if (rtn->data == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "Failed to allocate memory for write html return value");
+
+        return -1;
+    }
+    ngx_memcpy(rtn->data, raw_rtn, rtn->len);
+ 
     return 0;
 }
 
@@ -1115,11 +1118,21 @@ uc_lua_create_para_for_encode_json(lua_State *L, uc_lua_call_t *call)
 static ngx_int_t
 uc_lua_get_rtn_from_encode_json(lua_State *L, uc_lua_call_t *call)
 {
-    uc_str_t *rtn;
-    rtn = (uc_str_t *)call->call_rtn.data;
+    ngx_str_t      *rtn;
+    const char     *raw_rtn;
 
-    rtn->data = lua_tostring(L, -1);
-    rtn->len = luaL_len(L, -1);
+    rtn = (ngx_str_t *)call->call_rtn.data;
+
+    raw_rtn = lua_tolstring(L, -1,&rtn->len);
+
+    rtn->data = (u_char *)ngx_palloc(call->pool, rtn->len);
+    if (rtn->data == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, call->log, 0, "Failed to allocate memory for encode json return value");
+
+        return -1;
+    }
+    ngx_memcpy(rtn->data, raw_rtn, rtn->len);
     return 0;
 }
 
@@ -1195,7 +1208,7 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
     ngx_buf_t                       *b;
     uc_lua_call_t                   *call;
     uc_post_resp_t                  *resp;
-    uc_str_t                        *rtn;
+    ngx_str_t                       *rtn;
 
     if (r->method & NGX_HTTP_POST)
     {
@@ -1240,16 +1253,17 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
             ngx_str_set(&resp->message, "An unknown error occurs in server.");
         }
         call->call_para.data = resp;
+   
 
     }
     else
     {
         call = uc_get_lua_call_write_html();
-        call->pool = r->pool;
-
     }
 
-    call->call_rtn.data = ngx_pcalloc(r->pool, sizeof(uc_str_t));
+    call->pool = r->pool;
+
+    call->call_rtn.data = ngx_pcalloc(r->pool, sizeof(ngx_str_t));
 
     if (call->call_rtn.data == NULL)
     {
@@ -1268,7 +1282,7 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rtn = (uc_str_t *)call->call_rtn.data;
+    rtn = (ngx_str_t *)call->call_rtn.data;
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = rtn->len;
@@ -1286,17 +1300,9 @@ uc_response_text(ngx_http_request_t *r, ngx_int_t flag)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    u_char *ui = ngx_palloc(r->pool, rtn->len);
-    if (ui == NULL)
-    {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate memory for ui.");
 
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-    ngx_memcpy(ui, rtn->data, rtn->len);
-
-    b->pos = ui;
-    b->last = ui + rtn->len;
+    b->pos = rtn->data;
+    b->last = rtn->data + rtn->len;
     b->memory = 1;
     b->last_buf = 1;
 
