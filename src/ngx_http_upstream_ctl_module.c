@@ -46,8 +46,6 @@
 #define UI_STATUS_POST_SRV_BUSY           4
 #define UI_STATUS_POST_PARA_ERR           5
 
-#define UC_INVALID_PARA_VAL               -1
-
 #ifndef NGX_RWLOCK_WLOCK
 #define NGX_RWLOCK_WLOCK  ((ngx_atomic_uint_t) -1)
 #endif
@@ -412,6 +410,8 @@ static ngx_str_t     uc_ajax_mark[]={ngx_string("X-Requested-With"),ngx_string("
 
 static uc_main_conf_t *sucmcf = 0;
 
+const ngx_int_t UC_INVALID_PARA_VAL  =  0xffff;
+
 static ngx_command_t  ngx_http_upstream_ctl_commands[] =
 {
     {
@@ -726,7 +726,7 @@ uc_para_assign(uc_post_para_t *para, char *name, char *value, ngx_pool_t *pool)
     if(strlen(name) == 0) return 0;
     if(strcmp(name, "method") == 0)
     {
-        if((ngx_int_t)para->method == UC_INVALID_PARA_VAL)
+        if(para->method == (ngx_uint_t)UC_INVALID_PARA_VAL)
         {
             if (strcmp(value, "update") == 0)
             {
