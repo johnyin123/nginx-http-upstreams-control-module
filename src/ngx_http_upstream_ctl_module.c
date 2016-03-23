@@ -46,6 +46,11 @@
 #define UI_STATUS_POST_SRV_BUSY           4
 #define UI_STATUS_POST_PARA_ERR           5
 
+#define UC_INVALID_PARA_VAL               -1
+#define UC_POST_METHOD_UPDATE             0
+#define UC_POST_METHOD_EDIT               1
+#define UC_POST_METHOD_ENABLE             2
+
 #ifndef NGX_RWLOCK_WLOCK
 #define NGX_RWLOCK_WLOCK  ((ngx_atomic_uint_t) -1)
 #endif
@@ -61,13 +66,6 @@
 #define uc_get_lua_call_encode_json() &uc_lua_calls[1]
 
 ///////////////// type defines ////////////////////////////////////////////
-typedef enum
-{
-    UC_POST_METHOD_UPDATE = 0,
-    UC_POST_METHOD_EDIT,
-    UC_POST_METHOD_ENABLE
-
-} uc_post_method_e;
 
 typedef struct uc_lua_call_s uc_lua_call_t;
 
@@ -116,7 +114,7 @@ typedef struct   /* copy from ngx_http_upstream_keepalive_module */
 
 typedef struct   /* post request parameters */
 {
-    uc_post_method_e method;
+    ngx_int_t        method;
 
     ngx_int_t        backend;    /* backend index ( begin with 0) */
     ngx_int_t        server;     /* server index ( begin with 0) */
@@ -251,7 +249,7 @@ typedef struct
     ngx_int_t        post_id;
     ngx_socket_t     fd;      //take place
     ngx_int_t        server;
-    uc_post_method_e method;
+    ngx_int_t        method;
 
 } uc_event_data_t;
 
@@ -334,7 +332,7 @@ static ngx_int_t uc_request_count_hook_handler(ngx_http_request_t *r, ngx_http_u
 //share memory functions
 static char *uc_reg_shzone(ngx_conf_t *cf, uc_main_conf_t *ucmcf);
 static ngx_int_t uc_init_shzone(ngx_shm_zone_t *shm_zone, void *data);
-static ngx_int_t uc_download_data_from_shzone(uc_post_method_e method, ngx_int_t backend, ngx_int_t server);
+static ngx_int_t uc_download_data_from_shzone(ngx_int_t method, ngx_int_t backend, ngx_int_t server);
 static ngx_int_t uc_upload_data_to_shzone(uc_post_para_t *para);
 
 //synchronous functions
@@ -342,7 +340,7 @@ static void uc_channel_handler(ngx_event_t *ev);
 static void uc_sig_syn_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sig_syn_ack_handler(int signo, siginfo_t *sig_info, void *unused);
 static void uc_sigchld_handler(int signo);
-static ngx_int_t uc_apply_new_conf(uc_post_method_e method, ngx_int_t backend, ngx_int_t server, ngx_log_t *log);
+static ngx_int_t uc_apply_new_conf(ngx_int_t method, ngx_int_t backend, ngx_int_t server, ngx_log_t *log);
 static ngx_int_t uc_backup_peers_switch(ngx_http_upstream_server_t *xserver, ngx_http_upstream_rr_peer_t **xpeerp, ngx_http_upstream_rr_peers_t *peers, ngx_pool_t *pool);
 static void uc_reset_peers_data(uc_srv_conf_t *ucscf);
 static void uc_apply_conf_post_handler(ngx_event_t *ev);
@@ -410,7 +408,6 @@ static ngx_str_t     uc_ajax_mark[]={ngx_string("X-Requested-With"),ngx_string("
 
 static uc_main_conf_t *sucmcf = 0;
 
-const ngx_int_t UC_INVALID_PARA_VAL  =  0xffff;
 
 static ngx_command_t  ngx_http_upstream_ctl_commands[] =
 {
@@ -726,7 +723,7 @@ uc_para_assign(uc_post_para_t *para, char *name, char *value, ngx_pool_t *pool)
     if(strlen(name) == 0) return 0;
     if(strcmp(name, "method") == 0)
     {
-        if(para->method == (ngx_uint_t)UC_INVALID_PARA_VAL)
+        if(para->method == UC_INVALID_PARA_VAL)
         {
             if (strcmp(value, "update") == 0)
             {
@@ -3240,8 +3237,8 @@ uc_upload_data_to_shzone(uc_post_para_t *para)
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
-                   "uc_upload_data_to_shzone:%d", para->method);
+    ngx_log_debug0(NGX_LOG_DEBUG_CORE, sucmcf->shm_zone->shm.log, 0,
+                   "uc_upload_data_to_shzone");
 
     shpool = (ngx_slab_pool_t *)sucmcf->shm_zone->shm.addr;
     ucsh = (uc_sh_t *)shpool->data;
@@ -3276,7 +3273,7 @@ uc_upload_data_to_shzone(uc_post_para_t *para)
 }
 
 static ngx_int_t
-uc_download_data_from_shzone(uc_post_method_e method, ngx_int_t backend, ngx_int_t server)
+uc_download_data_from_shzone(ngx_int_t method, ngx_int_t backend, ngx_int_t server)
 {
     ngx_slab_pool_t                *shpool;
     uc_sh_t                        *ucsh;
@@ -3353,7 +3350,7 @@ uc_reset_peer_init_handler(ngx_uint_t ip_hash, ngx_uint_t keepalive, uc_srv_conf
  * function: the real modification of configuration
  */
 static ngx_int_t
-uc_apply_new_conf(uc_post_method_e method, ngx_int_t backend, ngx_int_t server, ngx_log_t *log)
+uc_apply_new_conf(ngx_int_t method, ngx_int_t backend, ngx_int_t server, ngx_log_t *log)
 {
     uc_srv_conf_t *ucscf, **ucscfp;
     uc_server_t *ucsrv;
