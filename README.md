@@ -124,7 +124,7 @@ You can view http upstream configuration and statistical upstream service reques
         说明：  
         explaining:
 
-        请求和响应均为json格式  
+        响应为json格式  
 
         method:指明请求的类型，值固定为字符串“update”，表示更新upstream 后端的ip_hash配置和keepalive配置   
 
@@ -144,10 +144,12 @@ You can view http upstream configuration and statistical upstream service reques
  
         message:与返回码对应的消息文本
    
-   * upstream 服务器参数编辑接口  
+   * upstream 服务器参数编辑接口
+   * modify upstream server parameter  
   
         (AJAX) POST /upstreams_edit   
-        请求参数:      
+        请求参数:   
+        parameter:     
          {   
             method:'edit',  
             backend:?,  
@@ -158,14 +160,16 @@ You can view http upstream configuration and statistical upstream service reques
             fail_timeout:?  
          }    
         响应格式:  
+        response:  
          {   
             code:?,   
             message:'?'  
          }   
 
         说明：  
+        explaining:  
 
-        请求和响应均为json格式  
+        响应为json格式  
 
         method:指明请求的类型，值固定为字符串“edit”，表示更新upstream 后端某个server的配置   
 
@@ -191,25 +195,29 @@ You can view http upstream configuration and statistical upstream service reques
 
         message:与返回码对应的消息文本
     
-   * upstream 服务器启停接口  
+   * upstream 服务器启停接口 
+   * start up / shut down upstream server 
  
         (AJAX) POST /upstreams_enable   
-        请求参数:    
+        请求参数:  
+        parameter:    
          {   
            method:'enable',   
            backend:?,   
            server:?,   
            down:?,   
          }    
-        响应格式:   
+        响应格式: 
+        response:    
          {   
            code:?,   
            message:'?'   
          }   
    
         说明：  
-
-        请求和响应均为json格式  
+        explaining:  
+  
+        响应为json格式  
 
         method:指明请求的类型，值固定为字符串“enable”，表示启动或停止upstream某个server   
 
