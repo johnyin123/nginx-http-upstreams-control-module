@@ -30,7 +30,7 @@ You can view http upstream configuration and statistical upstream service reques
 #配置
 #Config 
    将类似下面的内容添加到nginx.conf：  
-   Add following content to nginx.conf:
+   Add like following content to nginx.conf:
 
     location ~^/upstreams {    
 
@@ -48,46 +48,66 @@ You can view http upstream configuration and statistical upstream service reques
 
 #用法
 #Use
-   通过浏览器访问http://主机/upstreams  
-   Access http://host/upstreams through the browser
+   通过浏览器访问http://您的WEB服务器/upstreams  
+   Access http://domain/upstreams through the browser
 
 
 #配置指令
+#configuration directive for nginx
    * upstreams_admin
 
         开启或关闭upstream的监控功能,开启设置此值为on,关闭设置此值为off
         举例：upstreams_admin on
+  
+        On or off this module function.
+        example：upstreams_admin on
+  
    * auth_basic  
 
-        请参考nginx对应指令说明
+        请参考nginx对应指令说明  
+        Please reference to auth_basic directive of nginx
+  
    * auth_basic_user_file
 
         请参考nginx对应指令说明
+        Please reference to auth_basic_user_file directive of nginx
+  
    * ui_lua_file
 
         UI脚本文件路径（lua脚本文件）
         如果未设置，默认为path/to/nginx/html/ui.lua
         举例：ui_lua_file /usr/local/nginx/html/myui.lua
+  
+        The UI lua script file path, default value is path/to/nginx/html/ui.lua
+        example: ui_lua_file /usr/local/nginx/html/myui.lua
+
    * timeout
 
         更新upstream配置的超时时间（单位：秒）。如果未设置，默认为3秒
         举例：timeout 5
 
+        The response timeout for post upstream modification request, default value is 3 second. 
+        example:timeout 5
+    
 #API
-   * 配置查询接口   
+   * 配置查询接口 
+   * query upstream configuration  
  
         GET /upstreams   
         通过web客户访问   
       
-   * UI回调接口    
+   * UI回调接口  
+   * UI callback interface  
 
         (lua) write_html(data)    
         在nginx服务端回调   
 
    * Keepalive，Ip hash更新接口  
+   * update Keepalive，Ip hash for the backend
 
         (AJAX) POST /upstreams_update   
-        请求参数：  
+        请求参数： 
+        parameter:   
          {  
             method:'update',  
             backend:?,  
@@ -95,12 +115,14 @@ You can view http upstream configuration and statistical upstream service reques
             keepalive:?     
          }    
         响应格式： 
+        response:  
          {  
             code:?,  
             message:'?'   
          }  
 
         说明：  
+        explaining:
 
         请求和响应均为json格式  
 
@@ -211,10 +233,13 @@ You can view http upstream configuration and statistical upstream service reques
 #Customize UI by yourself  
 
 你可以利用API定制属于自己的响应界面，方法如下：  
+You can customize your UI by the API following these steps:
 
 1. 使用lua脚本编写html响应页面，由服务端在执行WEB查询接口响应时进行回调  
-2. 使用诸如javascript的客户脚本调用AJAX接口来更新upstream配置  
+1. Edit the html response page script using lua script language. That will be called by the nginx server on the server-side when you query upstream configuration through the browser.  
 
+2. 使用诸如javascript的客户脚本调用AJAX接口来更新upstream配置  
+2. Edit the client script such as javascript to modify upstream configuration. The client script can be embbed into the html page Whick you just has written in previous step.   
    
 --- 
 
